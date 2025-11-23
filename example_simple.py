@@ -5,6 +5,8 @@ Simple Example - BottleMod New API
 Demonstrates the basic usage of the refactored BottleMod framework.
 """
 
+from pathlib import Path
+
 # Use relative imports
 from bottlemod_new import (
     TaskExecution,
@@ -18,6 +20,9 @@ from bottlemod_new.model.requirements import (
     TaskRequirements,
 )
 from bottlemod_new.model.resources import ResourceType
+
+FIGURES_DIR = Path(__file__).resolve().parent / "figures"
+FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def example1_simple_cpu(visualize=False):
@@ -53,8 +58,9 @@ def example1_simple_cpu(visualize=False):
     if visualize:
         print("\nGenerating visualization...")
         fig = plot_combined_analysis(execution, title="Simple CPU Task Analysis")
-        fig.savefig("example_simple_visualization.png", dpi=150, bbox_inches="tight")
-        print("Saved: example_simple_visualization.png")
+        out_path = FIGURES_DIR / "example_simple_visualization.png"
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        print(f"Saved: {out_path}")
 
     return execution
 

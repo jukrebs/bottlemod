@@ -8,6 +8,7 @@ resulting progress curves and bottleneck traces match.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
 import matplotlib.pyplot as plt
@@ -37,6 +38,10 @@ from bottlemod_new.visualization.plot import plot_combined_analysis
 # Each scenario entry contains (breakpoints, coefficients) suitable for the
 # respective PPoly/Func constructor.
 ScenarioDef = Tuple[Sequence[float], Sequence[Sequence[float]]]
+
+
+FIGURES_DIR = Path(__file__).resolve().parent / "figures"
+FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def integrate_rate(
@@ -122,7 +127,7 @@ def plot_combined_new(name: str, execution: NewTaskExecution) -> None:
         title=f"BottleMod New - {name}",
     )
     filename = name.lower().replace(" ", "_") + "_new_combined.png"
-    fig.savefig(filename, dpi=150, bbox_inches="tight")
+    fig.savefig(FIGURES_DIR / filename, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -297,7 +302,7 @@ def plot_combined_legacy(
 
     plt.tight_layout()
     filename = name.lower().replace(" ", "_") + "_legacy_combined.png"
-    fig.savefig(filename, dpi=150, bbox_inches="tight")
+    fig.savefig(FIGURES_DIR / filename, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -401,7 +406,7 @@ def plot_progress(
     plt.tight_layout()
 
     filename = name.lower().replace(" ", "_") + "_progress.png"
-    plt.savefig(filename)
+    plt.savefig(FIGURES_DIR / filename)
     plt.close()
 
 
