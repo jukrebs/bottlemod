@@ -49,16 +49,6 @@ from .helper import (
     us,
 )
 
-# I/O-aware builders
-from .io import (
-    create_custom_io_task,
-    create_io_environment,
-    create_io_task,
-    create_multi_level_io_environment,
-    create_multi_level_io_task,
-    create_warming_io_task,
-)
-
 # Generic linear builders
 from .simple import (
     create_environment_with_data,
@@ -67,17 +57,25 @@ from .simple import (
     create_task_with_data,
 )
 
+# Write cache builders
+from .write_cache import (
+    create_sync_write_environment,
+    create_sync_write_task,
+    create_write_environment,
+    create_write_task,
+    create_write_task_with_flush,
+)
+
 __all__ = [
     # CPU builders
     "create_cpu_task",
     "create_cpu_environment",
-    # I/O builders
-    "create_io_task",
-    "create_io_environment",
-    "create_warming_io_task",
-    "create_custom_io_task",
-    "create_multi_level_io_task",
-    "create_multi_level_io_environment",
+    # Write cache builders
+    "create_write_task",
+    "create_write_environment",
+    "create_write_task_with_flush",
+    "create_sync_write_task",
+    "create_sync_write_environment",
     # Generic builders
     "create_linear_task",
     "create_linear_environment",
