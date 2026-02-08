@@ -1,0 +1,123 @@
+% Minimal Master Thesis Proposal (BottleMod I/O-aware extension)
+% Note: proposal/guide.md is currently empty in this repo; this template uses a standard proposal structure.
+
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{enumitem}
+\usepackage{hyperref}
+
+\hypersetup{%
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  citecolor=blue
+}
+
+\title{Master Thesis Proposal: Storage-/I/O-Aware Extension of BottleMod for Modeling I/O-Intensive Workloads}
+\author{\textbf{Student:} <Your Name> \\ \textbf{Supervisor:} <Supervisor Name> \\ \textbf{Institution:} <University / Chair>}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Motivation}
+Workflow and performance models are most useful when they correctly identify the limiting resource and explain \emph{why} a task is slow. For I/O-intensive tasks, bottlenecks depend on (i) access pattern (sequential vs. random, request sizes), (ii) cache reuse and eviction, and (iii) tier characteristics (bandwidth and IOPS). Treating I/O as a single ``throughput'' number often fails for workloads where small random reads are IOPS-bound or where warm-cache effects dominate.
+
+\section{Background: BottleMod}
+BottleMod models a workflow task as a process with:
+\begin{itemize}[leftmargin=*]
+	\item \textbf{Requirement functions} over progress $p$ for inputs (data) and resources (e.g., CPU), independent of time.
+	\item \textbf{Input functions} over time $t$ describing availability/allocations for those inputs/resources.
+	\item A derived progress trajectory $P(t)$ and outputs as a function of progress.
+\end{itemize}
+This separation of concerns is attractive for scheduling and bottleneck analysis, but I/O behavior often depends on a mapping from logical accesses to physical tiers (cache vs. disk), which itself depends on reuse and cache capacity.
+
+\section{Problem Statement}
+Given a task with significant storage interaction, the baseline BottleMod abstraction can misrepresent:
+\begin{itemize}[leftmargin=*]
+	\item \textbf{Warm-cache speedups}: second pass over the same dataset is faster.
+	\item \textbf{IOPS bottlenecks}: many small requests saturate IOPS despite available bandwidth.
+	\item \textbf{Tier shifts and thrashing}: performance changes when working set exceeds cache.
+\end{itemize}
+The goal is to extend BottleMod so that these effects can be represented with minimal additions, while keeping the core progress solver unchanged.
+
+\section{Research Questions}
+\begin{enumerate}[leftmargin=*]
+	\item How can I/O-intensive tasks be modeled in BottleMod such that bottlenecks caused by \emph{bandwidth} and \emph{IOPS} are distinguishable and correctly attributed to storage tiers?
+	\item What is a practical interface between process descriptors (access pattern/reuse) and environment descriptors (tier capacities and performance) that remains progress-based (time-independent) on the process side?
+	\item Does the extension measurably reduce prediction error and improve bottleneck classification on representative I/O workloads compared to the baseline model?
+\end{enumerate}
+
+\section{Proposed Approach}
+\subsection{Model Extension (Storage-/I/O-Aware BottleMod)}
+The extension models storage as a set of resource constraints per tier. On the \textbf{process side}, for each dataset $k$ we describe a \emph{logical access profile} over progress $p$:
+\begin{itemize}[leftmargin=*]
+	\item Logical bytes read/write: $A^r_k(p), A^w_k(p)$
+	\item Logical operations read/write (IOPS proxy): $Q^r_k(p), Q^w_k(p)$
+\end{itemize}
+On the \textbf{environment side}, for each tier $j$ (e.g., memory/page cache, SSD, HDD) we expose time-dependent capacities:
+\begin{itemize}[leftmargin=*]
+	\item Read/write bandwidth $I^{bw,r}_j(t), I^{bw,w}_j(t)$
+	\item Read/write IOPS $I^{iops,r}_j(t), I^{iops,w}_j(t)$
+\end{itemize}
+To connect both sides, a \emph{tier mapping} (hit/miss behavior) provides fractions $H_{k,j}(p)$ of accesses served by tier $j$ over progress (either measured directly or approximated from cache size and reuse descriptors). From $A, Q, H$ we derive ordinary BottleMod resource requirement functions per tier for bandwidth and IOPS. The progress computation remains unchanged; only the set of resources expands.
+
+\subsection{Parameterization Strategy}
+Two levels of parameterization are planned:
+\begin{itemize}[leftmargin=*]
+	\item \textbf{Minimal (manual/fit)}: piecewise $H(p)$ and piecewise-linear $A(p), Q(p)$ fitted from short calibration runs.
+	\item \textbf{Heuristic (cache-aware)}: derive $H(p)$ from cache capacity vs. working set size and access pattern class (sequential, random, strided), validated against measurements.
+\end{itemize}
+
+\section{Evaluation Plan}
+Experiments will target workloads where baseline models often fail:
+\begin{itemize}[leftmargin=*]
+	\item \textbf{Sequential scan (cold vs. warm)} with file sizes below/near/above memory.
+	\item \textbf{Two-pass analytics} to validate warm-cache speedup and bottleneck shifts.
+	\item \textbf{Random reads} (e.g., 4~KiB) to validate IOPS binding and request-size sensitivity.
+	\item \textbf{Thrashing scenarios} where working set exceeds cache.
+\end{itemize}
+Measurements will include wall-clock time, achieved bandwidth/IOPS, and cache indicators. Predictions will be produced for (i) baseline BottleMod and (ii) the storage-/I/O-aware extension. Metrics:
+\begin{itemize}[leftmargin=*]
+	\item Runtime prediction error (e.g., MAPE / RMSE)
+	\item Bottleneck classification accuracy (which resource binds over time)
+	\item Qualitative correctness of phase changes (cold $\rightarrow$ warm, thrash)
+\end{itemize}
+
+\section{Expected Contributions}
+\begin{itemize}[leftmargin=*]
+	\item A BottleMod extension that models storage tiers and separates bandwidth vs. IOPS constraints.
+	\item A practical parameterization workflow for I/O workloads (measurement + fitting / heuristics).
+	\item An experimental evaluation demonstrating improved precision for I/O-intensive tasks.
+\end{itemize}
+
+\section{Scope and Non-Goals}
+\begin{itemize}[leftmargin=*]
+	\item Focus is on single-node storage behavior (page cache and block device). Distributed storage and network effects are out of scope unless required by the baseline BottleMod setup.
+	\item The goal is improved modeling precision with minimal solver changes; not a full OS-level cache simulator.
+\end{itemize}
+
+\section{Work Plan (Tentative)}
+\begin{enumerate}[leftmargin=*]
+	\item Literature review: BottleMod, storage hierarchy modeling, cache/page-cache behavior, IOPS vs. bandwidth modeling.
+	\item Formalize the model interface (logical access profiles, tier mapping, tier resources).
+	\item Implement the extension in the existing codebase and add small synthetic examples.
+	\item Design and run microbenchmarks (e.g., fio-based) to characterize tier capacities.
+	\item Run evaluation workloads; compare baseline vs. extension; analyze sensitivity.
+	\item Write thesis and finalize artifacts (code + reproducible experiments).
+\end{enumerate}
+
+\section{Risks and Mitigations}
+\begin{itemize}[leftmargin=*]
+	\item \textbf{Risk:} Cache behavior too complex to model accurately. \\
+	\item \textbf{Risk:} Measurement noise / interference. \\
+	      \textbf{Mitigation:} Controlled single-machine experiments, repeated trials, cache control (drop caches) where applicable.
+\end{itemize}
+
+\end{document}

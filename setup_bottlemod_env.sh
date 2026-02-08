@@ -2,8 +2,9 @@
 # BottleMod Custom SciPy Setup Script
 #
 # This script creates a virtual environment with a custom patched SciPy v1.15.1
+# Supports Ubuntu/Debian (apt-get) and Arch Linux (pacman)
 
-set -e  # Exit on any error
+set -euo pipefail  # Exit on any error, undefined vars, pipe failures
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_NAME=".venv"
@@ -13,10 +14,27 @@ echo "========================================"
 echo "BottleMod Custom SciPy Setup"
 echo "========================================"
 
-# Check system requirements
-# Arch linux
-echo "Installing system requirements... on Arch Linux"
-sudo pacman -S --needed git gcc gcc-fortran openblas pkgconf base-devel
+# Detect OS and package manager
+echo "Detecting system package manager..."
+if command -v apt-get &> /dev/null; then
+    PACKAGE_MANAGER="apt-get"
+    echo "Detected: Ubuntu/Debian (apt-get)"
+elif command -v pacman &> /dev/null; then
+    PACKAGE_MANAGER="pacman"
+    echo "Detected: Arch Linux (pacman)"
+else
+    echo "ERROR: Neither apt-get nor pacman found. Unsupported distribution."
+    exit 1
+fi
+
+# Install system requirements based on package manager
+echo "Installing system requirements via $PACKAGE_MANAGER..."
+if [ "$PACKAGE_MANAGER" = "apt-get" ]; then
+    sudo DEBIAN_FRONTEND=noninteractive apt-get update
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y git gcc gfortran libblas-dev libopenblas-dev liblapack-dev libffi-dev pkg-config build-essential python3-dev python3-venv ninja-build
+elif [ "$PACKAGE_MANAGER" = "pacman" ]; then
+    sudo pacman -S --needed -y git gcc gcc-fortran openblas pkgconf base-devel
+fi
 echo "System requirements OK!"
 
 # Create virtual environment
