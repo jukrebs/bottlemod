@@ -216,14 +216,12 @@ __marimo__/
 .streamlit/secrets.toml
 
 # bottlemod
-bottlemod
 paper
 
 # Experiments and generated artifacts
 .sisyphus/
 experiment_plots/
 experiment_ground_truth.json
-proposal/latex/*.aux
-proposal/latex/*.out
-proposal/latex/*.bak*
-proposal/latex/proposal.pdf
+proposal/latex/*
+!proposal/latex/proposal.tex
+!proposal/latex/proposal.pdf
