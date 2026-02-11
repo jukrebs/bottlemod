@@ -19,8 +19,8 @@
   citecolor=blue
 }
 
-\title{Master Thesis Proposal: Storage-/I/O-Aware Extension of BottleMod for Modeling I/O-Intensive Workloads}
-\author{\textbf{Student:} <Your Name> \\ \textbf{Supervisor:} <Supervisor Name> \\ \textbf{Institution:} <University / Chair>}
+\title{Master Thesis Proposal: Cache Aware Extension of BottleMod for Modeling I/O-Intensive Workloads}
+\author{\textbf{Student:} Justus Krebs \\ \textbf{Supervisor:} Joel Witzke \\ \textbf{Institution:} TU Berlin / Research Group Distributed and Operating Systems}
 \date{\today}
 
 \begin{document}
@@ -55,7 +55,7 @@ The goal is to extend BottleMod so that these effects can be represented with mi
 \end{enumerate}
 
 \section{Proposed Approach}
-\subsection{Model Extension (Storage-/I/O-Aware BottleMod)}
+\subsection{Model Extension (Cache-Aware BottleMod)}
 The extension models storage as a set of resource constraints per tier. On the \textbf{process side}, for each dataset $k$ we describe a \emph{logical access profile} over progress $p$:
 \begin{itemize}[leftmargin=*]
 	\item Logical bytes read/write: $A^r_k(p), A^w_k(p)$
