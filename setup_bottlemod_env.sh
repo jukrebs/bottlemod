@@ -79,18 +79,18 @@ git submodule update --init
 
 # Apply custom _ppoly.pyx patch
 echo "Applying custom _ppoly.pyx patch..."
-CUSTOM_PPOLY="$PROJECT_ROOT/bottlemod/custom_scipy/_ppoly_v1.15.1.pyx"
+CUSTOM_PPOLY_URL="https://raw.githubusercontent.com/bottlemod/bottlemod/refs/heads/main/custom_scipy/_ppoly_v1.15.1.pyx"
 TARGET_PPOLY="$SCIPY_DIR/scipy/interpolate/_ppoly.pyx"
 
-if [ ! -f "$CUSTOM_PPOLY" ]; then
-    echo "ERROR: Custom _ppoly.pyx file not found: $CUSTOM_PPOLY"
-    echo "Make sure the file exists in bottlemod/custom_scipy/_ppoly_v1.15.1.pyx"
+if command -v curl &> /dev/null; then
+    curl -fsSL "$CUSTOM_PPOLY_URL" -o "$TARGET_PPOLY"
+elif command -v wget &> /dev/null; then
+    wget -qO "$TARGET_PPOLY" "$CUSTOM_PPOLY_URL"
+else
+    echo "ERROR: Neither curl nor wget found. Cannot download custom _ppoly.pyx patch."
     exit 1
 fi
 
-# Backup original and apply patch
-# cp "$TARGET_PPOLY" "$TARGET_PPOLY.original"
-cp "$CUSTOM_PPOLY" "$TARGET_PPOLY"
 echo "Custom _ppoly.pyx patch applied!"
 
 # Build and install SciPy
