@@ -1,0 +1,148 @@
+{
+  "schema_version": 3,
+  "meta": {
+    "host": "cpu09",
+    "platform": "Linux-6.8.0-90-generic-x86_64-with-glibc2.39",
+    "python": "3.12.3 (main, Jan 22 2026, 20:57:42) [GCC 13.3.0]",
+    "timestamp": "2026-02-20T12:35:52+0000",
+    "video": "/mnt/sata/input.mp4",
+    "file_size_bytes": 4580577274,
+    "video2": null,
+    "file_size2_bytes": null,
+    "mem_sweep_bytes": [
+      268435456,
+      536870912,
+      1073741824,
+      2147483648,
+      4294967296,
+      8589934592,
+      17179869184
+    ],
+    "trials": 5,
+    "drop_caches": true,
+    "disk_bw_bytes_s": 136998490.16395918,
+    "mem_bw_bytes_s": 274804623.1842908
+  },
+  "points": [
+    {
+      "mem_limit_bytes": 268435456,
+      "mem_limit_label": "256M",
+      "hit_rate": 0.058602975114878504,
+      "vanilla_predicted_s": 33.435239092912525,
+      "ca_predicted_s": 31.475834608390556,
+      "measured_trials_s": [
+        34.4736305300612,
+        34.64417027006857,
+        33.308765979949385,
+        30.2566133630462,
+        30.849791755899787
+      ],
+      "measured_mean_s": 32.706594379805026,
+      "measured_min_s": 30.2566133630462,
+      "measured_max_s": 34.64417027006857
+    },
+    {
+      "mem_limit_bytes": 536870912,
+      "mem_limit_label": "512M",
+      "hit_rate": 0.11720595022975701,
+      "vanilla_predicted_s": 33.435239092912525,
+      "ca_predicted_s": 29.516430123868595,
+      "measured_trials_s": [
+        27.484084286959842,
+        24.397788007045165,
+        26.116656616097316,
+        29.08310664491728,
+        29.167548154946417
+      ],
+      "measured_mean_s": 27.249836741993203,
+      "measured_min_s": 24.397788007045165,
+      "measured_max_s": 29.167548154946417
+    },
+    {
+      "mem_limit_bytes": 1073741824,
+      "mem_limit_label": "1G",
+      "hit_rate": 0.23441190045951402,
+      "vanilla_predicted_s": 33.435239092912525,
+      "ca_predicted_s": 25.597621154824665,
+      "measured_trials_s": [
+        23.7555783840362,
+        26.050238691968843,
+        29.622321164002642,
+        29.972645612899214,
+        31.860303199850023
+      ],
+      "measured_mean_s": 28.252217410551385,
+      "measured_min_s": 23.7555783840362,
+      "measured_max_s": 31.860303199850023
+    },
+    {
+      "mem_limit_bytes": 2147483648,
+      "mem_limit_label": "2G",
+      "hit_rate": 0.46882380091902803,
+      "vanilla_predicted_s": 33.435239092912525,
+      "ca_predicted_s": 17.760003216736802,
+      "measured_trials_s": [
+        28.308228104142472,
+        30.725365004036576,
+        29.8226048219949,
+        26.273935639997944,
+        22.447148146107793
+      ],
+      "measured_mean_s": 27.515456343255938,
+      "measured_min_s": 22.447148146107793,
+      "measured_max_s": 30.725365004036576
+    },
+    {
+      "mem_limit_bytes": 4294967296,
+      "mem_limit_label": "4G",
+      "hit_rate": 0.9376476018380561,
+      "vanilla_predicted_s": 33.435239092912525,
+      "ca_predicted_s": 15.629166810340333,
+      "measured_trials_s": [
+        22.28518896899186,
+        21.09195063309744,
+        25.884591395035386,
+        29.51182464300655,
+        27.40470214909874
+      ],
+      "measured_mean_s": 25.235651557845994,
+      "measured_min_s": 21.09195063309744,
+      "measured_max_s": 29.51182464300655
+    },
+    {
+      "mem_limit_bytes": 8589934592,
+      "mem_limit_label": "8G",
+      "hit_rate": 1.0,
+      "vanilla_predicted_s": 33.435239092912525,
+      "ca_predicted_s": 16.668486945098266,
+      "measured_trials_s": [
+        21.6247332689818,
+        21.045875451061875,
+        22.818963189143687,
+        19.91268750396557,
+        20.444295577937737
+      ],
+      "measured_mean_s": 21.169310998218133,
+      "measured_min_s": 19.91268750396557,
+      "measured_max_s": 22.818963189143687
+    },
+    {
+      "mem_limit_bytes": 17179869184,
+      "mem_limit_label": "16G",
+      "hit_rate": 1.0,
+      "vanilla_predicted_s": 33.435239092912525,
+      "ca_predicted_s": 16.668486945098266,
+      "measured_trials_s": [
+        21.320314888143912,
+        18.33208778500557,
+        18.950438886880875,
+        21.52469606208615,
+        18.415988743072376
+      ],
+      "measured_mean_s": 19.708705273037776,
+      "measured_min_s": 18.33208778500557,
+      "measured_max_s": 21.52469606208615
+    }
+  ],
+  "reorder": []
+}

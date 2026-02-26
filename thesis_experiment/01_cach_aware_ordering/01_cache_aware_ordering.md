@@ -1,137 +1,103 @@
-# Experiment 1 — Cache-aware ordering (reuse vs eviction)
+# Experiment 1 — Cache-Aware Modeling of FFmpeg Video Remux
 
 ## Goal
 
-Demonstrate that **workflow ordering** can change whether repeated reads are served from **disk** or from the **page cache**, and that BottleMod‑SH can:
+Demonstrate that **BottleMod‑CA** (cache-aware) produces more accurate runtime predictions than **vanilla BottleMod** for an I/O-intensive workload whose performance depends on the storage hierarchy.
 
-1) predict the bottleneck timeline (disk→memory),
-2) identify a performance problem in a naive workflow ordering, and
-3) recommend a fix (reordering) that yields a measurable speedup.
+The experiment uses **ffmpeg video remux** (copy codec, no transcoding) as a real-world sequential-read workload. By varying the available page cache via cgroup memory limits, we control how much of the input file is served from memory vs. disk. The vanilla model cannot capture this effect; the cache-aware model can.
 
-This mirrors the original BottleMod paper’s evaluation pattern (Sec. 4.2–4.4): a workflow with a shared bottleneck, a change in allocation/ordering, and a speedup.
+## Workload
 
-## Workflow
-
-We consider a single-machine, buffered I/O workflow consisting of sequential reads:
-
-- Dataset **A** (fits in cache budget **C**)
-- Dataset **B** (used to evict A from cache)
-
-Two candidate orderings:
-
-### Baseline (naive)
-
-1. Read A (cold)
-2. Read B (cold, evicts cache)
-3. Read A again (expected warm, but becomes cold due to eviction)
-
-### Fix (cache-aware ordering)
-
-1. Read A (cold)
-2. Read A again (warm, served from page cache)
-3. Read B (cold)
-
-## Bottleneck narrative
-
-- Baseline: the **second read of A** becomes **disk-bandwidth bound**.
-- Fix: the **second read of A** becomes **memory/page-cache bandwidth bound**, so total runtime decreases.
-
-The insight is *not* “buy a faster disk”; it’s a workflow-level change: **place repeated A access back-to-back** so it is still cached.
-
-## Experimental control
-
-Run the workflow inside a single cgroup (one `systemd-run` scope) with:
-
-- `MemoryMax=C` to bound page cache capacity
-- `IOReadBandwidthMax=...` to reduce variance (optional but recommended)
-
-Cold-start each trial using:
-
-- `sync; echo 3 > /proc/sys/vm/drop_caches` (sudo)
-
-## Swept parameter (Figure‑6 style)
-
-Sweep **B read size** as a fraction of the cache budget:
-
-\[
-\text{x} = 100 \cdot \frac{|B|}{C} \;\; (\%)
-\]
-
-Intuition: for small |B|, A is not evicted → baseline and fix are similar.
-For large |B|, A is evicted → baseline is slower and fix wins.
-
-## Measurements
-
-For each x value and for each ordering:
-
-- run N trials
-- record per-step wall time and total wall time
-- compute mean and min/max (error bars)
-
-Implementation detail:
-- use buffered sequential reads (e.g., fio `--rw=read --direct=0`)
-- **do not** invalidate caches between steps; only cold-start once per workflow run
-
-## Model / prediction (BottleMod‑SH)
-
-Model the workflow as a single piecewise process over progress p with two datasets (A and B):
-
-- A is read in phases where required
-- B is read in phases where required
-
-Tier model:
-
-- Tier 0: memory (page cache) with bandwidth `mem_bw`
-- Tier 1: disk with bandwidth `disk_bw`
-
-Tier mapping:
-
-- Baseline: A is served from disk in both reads (cold both times) once B is large enough to evict.
-- Fix: the second A read is served from memory.
-
-Use measured `disk_bw` (cold read) and `mem_bw` (warm read) for predictions.
-
-## Plots (match BottleMod paper format)
-
-### Figure‑6 style
-
-For baseline and fix (two stacked panels or two series):
-
-- x-axis: `|B|/C` in %
-- y-axis: total workflow time (s)
-- **orange solid line**: BottleMod‑SH prediction
-- **black min/max bars** (with mean): measured runtime
-
-### Figure‑7 style
-
-2×2 panel for two scenarios (e.g., small |B| and large |B|, or baseline vs fix):
-
-- Top row: progress (%) vs time with full-height **bottleneck-colored bands**
-- Bottom row: disk data rate usage vs time (piecewise constant lines)
-
-Use the same general colors/layout as the original paper’s Figure 7.
-
-## Implementation (this repo)
-
-- Runner + plotting: `thesis experiments/exp1_cache_aware_ordering.py`
-
-It produces:
-- `exp1_cache_aware_ordering_results.json`
-- `fig6_exp1_ABA.png` (baseline)
-- `fig6_exp1_AAB.png` (fix)
-- `fig7_exp1_baseline_vs_fix.png` (paper Figure‑7 style 2×2 panel)
-
-Typical invocation (run inside a systemd-run scope on `tu`):
+**ffmpeg remux** of a 4.6 GB H.264 video file on a SATA disk:
 
 ```bash
-sudo systemd-run --wait --collect \
-  --property=CPUAffinity=0-3 \
-  --property=MemoryMax=4G --property=MemorySwapMax=0 \
-  --property='IOReadBandwidthMax=/dev/sdb2 200M' \
-  -- \
-  python3 "thesis experiments/exp1_cache_aware_ordering.py" \
-    --out-dir /var/tmp/exp1_cache_ordering \
-    --cache-bytes 4G --a-bytes 2G \
-    --b-bytes-sweep 0,1G,2G,3G,4G,6G,8G \
-    --trials 5 --drop-caches
+ffmpeg -y -i /mnt/sata/input.mp4 -c copy /mnt/sata/output.mp4
+```
+
+This is a purely I/O-bound workload — CPU utilization during remux is negligible. The bottleneck is sequential read bandwidth, which depends on whether data resides in the page cache or must be read from disk.
+
+## Experimental Design
+
+### Swept parameter
+
+**cgroup memory limit** from 256 MB to 16 GB. This controls the effective page cache size:
+
+- **Small memory** (e.g., 256 MB): file cannot be cached → reads are disk-bound → cold performance
+- **Large memory** (e.g., 16 GB): file fits in cache → reads are memory-bound → warm performance
+
+### Control
+
+Each trial:
+
+1. Drop caches: `sync; echo 3 > /proc/sys/vm/drop_caches`
+2. Run ffmpeg inside a cgroup with the specified `MemoryMax`
+3. Record wall-clock runtime
+
+Multiple trials per memory limit for statistical confidence.
+
+### Calibration
+
+Before the sweep, measure:
+
+- **disk_bw**: effective SATA read bandwidth (cold read) → 242.7 MB/s
+- **mem_bw**: effective page cache bandwidth (warm read) → 350.7 MB/s
+
+## Models
+
+### Vanilla BottleMod
+
+Models ffmpeg as a single task with:
+- One CPU function (minimal compute)
+- One data function (sequential read at disk bandwidth)
+
+Produces a **constant** runtime prediction (~18.9 s) regardless of memory limit, because it has no concept of storage tiers.
+
+### BottleMod‑CA
+
+Models ffmpeg as a `StorageHierarchyTask` with:
+- **LogicalAccessProfile**: bytes read over progress (sequential read of input file)
+- **TierMapping**: cache hit rate function based on cgroup memory limit vs. file size
+- **StorageTier** (memory): bandwidth = 350.7 MB/s
+- **StorageTier** (disk): bandwidth = 242.7 MB/s
+
+## Plots (BottleMod paper style)
+
+### Figure‑6 style (prediction vs measurement)
+
+- x-axis: cgroup memory limit
+- y-axis: runtime (s)
+- **Orange line**: BottleMod‑CA prediction
+- **Gray dashed line**: Vanilla BottleMod prediction (flat)
+- **Black error bars**: measured runtime (mean ± min/max)
+
+### Figure‑7 style (bottleneck timeline)
+
+2×2 panel showing cold vs warm scenarios:
+
+- Top row: progress (%) vs time with bottleneck-colored bands
+- Bottom row: resource usage (bandwidth) vs time
+
+## Implementation
+
+- Runner + plotting: `exp1_cache_aware_ordering.py`
+- Uses `.venv` in project root (patched SciPy)
+
+## Run environment (tu)
+
+- Host: `cpu09`, AMD EPYC 7282 16-Core, 125 Gi RAM
+- SATA disk: `/dev/sda` mounted at `/mnt/sata` (880 GB, ext4)
+- Input video: `/mnt/sata/input.mp4` (4.3 GB, H.264 1080p)
+- ffmpeg 6.1.1, cgroup v2, sudo available
+
+## How to reproduce
+
+```bash
+ROOT="$HOME/bm_exp/bottlemod_cache_aware"
+PY="$ROOT/.venv/bin/python"
+
+"$PY" "$ROOT/thesis_experiment/01_cach_aware_ordering/exp1_cache_aware_ordering.py" \
+  --video /mnt/sata/input.mp4 \
+  --out-dir "/var/tmp/exp1_ffmpeg_$(date +%Y%m%d_%H%M%S)" \
+  --mem-sweep 256M,512M,1G,2G,4G,8G,16G \
+  --trials 5 --drop-caches
 ```

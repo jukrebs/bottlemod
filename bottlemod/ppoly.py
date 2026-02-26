@@ -326,7 +326,7 @@ class PPoly(scipy.interpolate.PPoly):
             elif idx > 0:
                 startpos = self.x[idx]
             else:
-                startpos = self.x[0]
+                startpos = -math.inf
             endpos = self.x[idx + 1] if idx + 1 < len(self.x) else math.inf
             return PPoly(
                 [startpos, endpos],

@@ -1,21 +1,74 @@
 #!/usr/bin/env python3
+"""
+Experiment 1 — Cache-Aware Modeling of FFmpeg Video Remux
+
+Compares vanilla BottleMod (no cache awareness) against BottleMod-CA
+(cache-aware) for an ffmpeg video remux workload under varying cgroup
+memory limits.  Optionally demonstrates task reordering with two videos.
+
+Usage:
+    .venv/bin/python thesis_experiment/01_cach_aware_ordering/exp1_cache_aware_ordering.py \
+        --video /mnt/sata/input.mp4 \
+        --video2 /mnt/sata/input_small.mp4 \
+        --out-dir /var/tmp/exp1_ffmpeg \
+        --mem-sweep 256M,512M,1G,2G,4G,8G,16G \
+        --trials 5 --drop-caches
+"""
 
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import platform
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Tuple
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.axes import Axes
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
+
+from bottlemod.func import Func
+
+# ---------------------------------------------------------------------------
+# BottleMod-CA imports (package install)
+# ---------------------------------------------------------------------------
+from bottlemod.ppoly import PPoly
+from bottlemod.storage_hierarchy import (
+    LogicalAccessProfile,
+    StorageHierarchyTask,
+    StorageTier,
+    TierMapping,
+    get_bottleneck_label,
+)
+from bottlemod.task import TaskExecution
+
+# ---------------------------------------------------------------------------
+# Vanilla BottleMod imports (via sys.path for relative-import package)
+# ---------------------------------------------------------------------------
+_VANILLA_DIR = str(Path(__file__).resolve().parents[2] / "bottlemod_vanilla")
+if _VANILLA_DIR not in sys.path:
+    sys.path.insert(0, _VANILLA_DIR)
+
+_vanilla_task_mod = importlib.import_module("task")
+_vanilla_func_mod = importlib.import_module("func")
+_vanilla_ppoly_mod = importlib.import_module("ppoly")
+VanillaTask = _vanilla_task_mod.Task
+VanillaTaskExecution = _vanilla_task_mod.TaskExecution
+VanillaFunc = _vanilla_func_mod.Func
+VanillaPPoly = _vanilla_ppoly_mod.PPoly
+
+sys.path.remove(_VANILLA_DIR)
+
+
+# ===========================================================================
+# Helpers
+# ===========================================================================
 
 
 def _parse_size_bytes(s: str) -> int:
@@ -40,177 +93,226 @@ def _parse_size_bytes(s: str) -> int:
 
 
 def _format_bytes(n: int) -> str:
-    if n % (1024**3) == 0:
-        return f"{n // (1024**3)}GiB"
-    if n % (1024**2) == 0:
-        return f"{n // (1024**2)}MiB"
+    if n >= 1024**3 and n % (1024**3) == 0:
+        return f"{n // (1024**3)}G"
+    if n >= 1024**2 and n % (1024**2) == 0:
+        return f"{n // (1024**2)}M"
+    if n >= 1024 and n % 1024 == 0:
+        return f"{n // 1024}K"
     return f"{n}B"
+
+
+def _format_bytes_human(n: int) -> str:
+    """Human-readable size with one decimal (e.g. '4.3 GB')."""
+    if n >= 1024**3:
+        return f"{n / (1024**3):.1f} GB"
+    if n >= 1024**2:
+        return f"{n / (1024**2):.0f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.0f} KB"
+    return f"{n} B"
 
 
 def _run(
     cmd: list[str], *, check: bool = True, capture: bool = True
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        cmd,
-        check=check,
-        text=True,
-        capture_output=capture,
-    )
+    return subprocess.run(cmd, check=check, text=True, capture_output=capture)
 
 
 def _sudo_drop_caches() -> None:
-    # Strong cold-start: global side effects, but very repeatable.
     _run(["sudo", "sh", "-c", "sync; echo 3 > /proc/sys/vm/drop_caches"], check=True)
 
 
-def _ensure_file(path: Path, size_bytes: int) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and path.stat().st_size == size_bytes:
-        return
-    # Allocate real blocks (avoid sparse files).
-    _run(["fallocate", "-l", str(size_bytes), str(path)], check=True)
+# ===========================================================================
+# FFmpeg runner
+# ===========================================================================
 
 
-def _fio_sequential_read(
-    file_path: Path, size_bytes: int, out_json: Path
-) -> dict[str, Any]:
-    # Buffered sequential read, cache-preserving (invalidate=0).
-    cmd = [
-        "fio",
-        "--name=seqread",
-        f"--filename={file_path}",
-        "--rw=read",
-        "--bs=1m",
-        "--iodepth=32",
-        "--ioengine=libaio",
-        "--direct=0",
-        "--invalidate=0",
-        "--fadvise_hint=0",
-        f"--size={size_bytes}",
-        "--numjobs=1",
-        "--group_reporting",
-        "--output-format=json",
-        f"--output={out_json}",
-    ]
-    _run(cmd, check=True)
-    return json.loads(out_json.read_text(encoding="utf-8"))
-
-
-@dataclass
-class StepMeasurement:
-    name: str
-    runtime_s: float
-    bw_bytes_s: float
-
-
-def _aggregate_fio(payload: dict[str, Any]) -> StepMeasurement:
-    jobs = payload.get("jobs")
-    if not isinstance(jobs, list) or not jobs:
-        raise ValueError("fio JSON missing jobs[]")
-    job = jobs[0]
-    if not isinstance(job, dict):
-        raise ValueError("fio JSON invalid job")
-    read = job.get("read")
-    if not isinstance(read, dict):
-        raise ValueError("fio JSON missing job.read")
-    runtime_ms = float(read.get("runtime", 0.0))
-    bw_bytes_s = float(read.get("bw_bytes", 0.0))
-    return StepMeasurement(
-        name=str(job.get("jobname", "unknown")),
-        runtime_s=runtime_ms / 1000.0,
-        bw_bytes_s=bw_bytes_s,
-    )
-
-
-def _write_jobfile(
-    jobfile: Path,
+def _run_ffmpeg_remux(
+    video_in: Path,
+    video_out: Path,
     *,
-    file_a: Path,
-    file_b: Path,
-    a_size: int,
-    b_size: int,
-    ordering: str,
-) -> None:
-    # Enforce sequential ordering of jobs via stonewall.
-    # Keep buffered IO and preserve cache between jobs.
-    if ordering not in {"ABA", "AAB"}:
-        raise ValueError("ordering must be ABA or AAB")
-    steps: list[tuple[str, Path, int]]
-    if ordering == "ABA":
-        steps = [("A1", file_a, a_size), ("B", file_b, b_size), ("A2", file_a, a_size)]
-    else:
-        steps = [("A1", file_a, a_size), ("A2", file_a, a_size), ("B", file_b, b_size)]
+    mem_limit: int | None = None,
+    drop_caches: bool = False,
+) -> float:
+    """Run ffmpeg remux and return wall-clock time in seconds.
 
-    lines: list[str] = []
-    lines += [
-        "[global]",
-        "rw=read",
-        "bs=1m",
-        "iodepth=32",
-        "ioengine=libaio",
-        "direct=0",
-        "invalidate=0",
-        "fadvise_hint=0",
-        "numjobs=1",
-        "group_reporting=1",
-        "",
-    ]
-
-    for i, (name, fp, sz) in enumerate(steps):
-        lines += [
-            f"[{name}]",
-            f"filename={fp}",
-            f"size={sz}",
-        ]
-        if i > 0:
-            lines.append("stonewall")
-        lines.append("")
-
-    jobfile.write_text("\n".join(lines), encoding="utf-8")
-
-
-def _run_workflow_once(
-    *,
-    out_dir: Path,
-    ordering: str,
-    file_a: Path,
-    file_b: Path,
-    a_size: int,
-    b_size: int,
-    trial_idx: int,
-    drop_caches: bool,
-) -> dict[str, StepMeasurement]:
+    If *mem_limit* is set, run inside a systemd-run cgroup with that MemoryMax.
+    """
     if drop_caches:
         _sudo_drop_caches()
 
-    jobfile = out_dir / f"job_{ordering}_trial{trial_idx}.fio"
-    out_json = out_dir / f"run_{ordering}_trial{trial_idx}.json"
-    _write_jobfile(
-        jobfile,
-        file_a=file_a,
-        file_b=file_b,
-        a_size=a_size,
-        b_size=b_size,
-        ordering=ordering,
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-y",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-i",
+        str(video_in),
+        "-c",
+        "copy",
+        str(video_out),
+    ]
+
+    if mem_limit is not None:
+        cmd = [
+            "sudo",
+            "systemd-run",
+            "--wait",
+            "--collect",
+            "--quiet",
+            f"--property=MemoryMax={mem_limit}",
+            "--property=MemorySwapMax=0",
+            "--",
+        ] + ffmpeg_cmd
+    else:
+        cmd = ffmpeg_cmd
+
+    t0 = time.monotonic()
+    _run(cmd, check=True, capture=True)
+    t1 = time.monotonic()
+
+    # Clean up output file to avoid filling disk
+    if video_out.exists():
+        video_out.unlink()
+
+    return t1 - t0
+
+
+# ===========================================================================
+# Calibration
+# ===========================================================================
+
+
+def calibrate(
+    video: Path,
+    out_dir: Path,
+    *,
+    drop_caches: bool,
+    cold_mem_limit: int,
+    warm_mem_limit: int,
+) -> Tuple[float, float, int]:
+    """Measure cold (disk) and warm (cache) bandwidth under cgroup constraints.
+
+    Cold run uses *cold_mem_limit* (smallest cgroup) so that the measured
+    disk bandwidth reflects the I/O amplification caused by memory pressure.
+    Warm run uses *warm_mem_limit* (largest cgroup) so the file fits in cache.
+
+    Returns ``(disk_bw_bytes_s, mem_bw_bytes_s, file_size_bytes)``.
+    """
+    file_size = video.stat().st_size
+    tmp_out = out_dir / "calib_output.mp4"
+
+    print(f"Calibrating: file_size = {file_size / 1e9:.2f} GB")
+
+    cold_time = _run_ffmpeg_remux(
+        video, tmp_out, mem_limit=cold_mem_limit, drop_caches=drop_caches
+    )
+    disk_bw = file_size / max(cold_time, 1e-9)
+    print(
+        f"  Cold run (cgroup {_format_bytes(cold_mem_limit)}): "
+        f"{cold_time:.2f}s  ->  disk_bw = {disk_bw / 1e6:.1f} MB/s"
     )
 
-    _run(
-        ["fio", "--output-format=json", f"--output={out_json}", str(jobfile)],
-        check=True,
+    # Warm: pre-load file into page cache, then measure with generous cgroup
+    _run_ffmpeg_remux(video, tmp_out)
+    warm_time = _run_ffmpeg_remux(video, tmp_out, mem_limit=warm_mem_limit)
+    mem_bw = file_size / max(warm_time, 1e-9)
+    print(
+        f"  Warm run (cgroup {_format_bytes(warm_mem_limit)}): "
+        f"{warm_time:.2f}s  ->  mem_bw  = {mem_bw / 1e6:.1f} MB/s"
     )
-    payload = json.loads(out_json.read_text(encoding="utf-8"))
-    jobs = payload.get("jobs")
-    if not isinstance(jobs, list):
-        raise ValueError("fio output missing jobs")
 
-    out: dict[str, StepMeasurement] = {}
-    for job in jobs:
-        if not isinstance(job, dict):
-            continue
-        name = str(job.get("jobname", ""))
-        # Re-wrap to match _aggregate_fio interface.
-        out[name] = _aggregate_fio({"jobs": [job]})
-    return out
+    return disk_bw, mem_bw, file_size
+
+
+# ===========================================================================
+# Modeling
+# ===========================================================================
+
+
+def predict_vanilla(file_size: float, disk_bw: float) -> float:
+    """Predict runtime using vanilla BottleMod (no cache awareness).
+
+    Vanilla BottleMod has no concept of storage tiers, so its prediction
+    is a constant ``file_size / disk_bw`` regardless of cache state.
+    """
+    max_progress = float(file_size)
+    T_max = max_progress / disk_bw
+
+    out_cpu = [VanillaPPoly([0, max_progress], [[1e-9]])]
+    out_data = [VanillaFunc([0, max_progress], [[1, 0]])]
+
+    in_cpu = [VanillaPPoly([0, T_max], [[1e12]])]
+    in_data = [VanillaFunc([0, T_max], [[disk_bw, 0]])]
+
+    task = VanillaTask(out_cpu, out_data)
+    result, _ = VanillaTaskExecution(task, in_cpu, in_data).get_result()
+    return float(result.x[-1])
+
+
+def _make_sh_task(
+    file_size: float, disk_bw: float, mem_bw: float, hit_rate: float
+) -> StorageHierarchyTask:
+    """Create a StorageHierarchyTask for the given parameters."""
+    max_progress = 1.0
+    T_max = file_size / disk_bw * 2.0
+
+    return StorageHierarchyTask(
+        access_profiles=[
+            LogicalAccessProfile.sequential_read("video", file_size, max_progress)
+        ],
+        tier_mappings=[
+            TierMapping.constant_hit_rate(
+                "video",
+                cache_tier=0,
+                backing_tier=1,
+                hit_rate=hit_rate,
+                progress_range=(0, max_progress),
+            )
+        ],
+        tiers=[
+            StorageTier(
+                name="PageCache", tier_index=0, I_bw_read=PPoly([0, T_max], [[mem_bw]])
+            ),
+            StorageTier(
+                name="Disk", tier_index=1, I_bw_read=PPoly([0, T_max], [[disk_bw]])
+            ),
+        ],
+        cpu_funcs=[PPoly([0, max_progress], [[1e-9]])],
+        data_funcs=[Func([0, max_progress], [[1, 0]])],
+    )
+
+
+def predict_cache_aware(
+    file_size: float, disk_bw: float, mem_bw: float, hit_rate: float
+) -> Tuple[float, Any, Any, StorageHierarchyTask]:
+    """Predict runtime using BottleMod-CA.
+
+    Returns ``(predicted_time, progress_func, bottleneck_list, sh_task)``.
+    """
+    max_progress = 1.0
+    T_max = file_size / disk_bw * 2.0
+
+    sh_task = _make_sh_task(file_size, disk_bw, mem_bw, hit_rate)
+
+    bm_task = sh_task.to_task()
+    storage_inputs = sh_task.get_storage_input_funcs()
+
+    in_cpu = [PPoly([0, T_max], [[1e12]])]
+    all_in_cpu = in_cpu + storage_inputs
+    in_data_func = Func([0, T_max], [[max_progress]])
+    in_data = [in_data_func]
+
+    execution = TaskExecution(bm_task, all_in_cpu, in_data)
+    progress, bottlenecks = execution.get_result()
+    return float(progress.x[-1]), progress, bottlenecks, sh_task
+
+
+# ===========================================================================
+# Plotting
+# ===========================================================================
 
 
 def _configure_matplotlib_paper_style() -> None:
@@ -231,28 +333,63 @@ def _configure_matplotlib_paper_style() -> None:
     )
 
 
+COLOR_MAP = {
+    "disk_bw": "#F58518",  # orange
+    "memory_bw": "#4C78A8",  # blue
+    "cpu": "#54A24B",  # green
+    "data": "#999999",  # gray
+}
+
+
+def _bottleneck_category(bn_index: int, sh_task: StorageHierarchyTask) -> str:
+    """Map a bottleneck index to a colour-map category string."""
+    label = get_bottleneck_label(bn_index, sh_task).lower()
+    if "pagecache" in label or "mem" in label or "cache" in label:
+        return "memory_bw"
+    elif "disk" in label:
+        return "disk_bw"
+    elif "cpu" in label:
+        return "cpu"
+    return "data"
+
+
 def _plot_fig6(
     *,
     out_path: Path,
-    x_pct: list[float],
-    predicted_s: list[float],
+    mem_labels: list[str],
+    vanilla_pred: list[float],
+    ca_pred: list[float],
     mean_s: list[float],
     min_s: list[float],
     max_s: list[float],
-    title: str,
+    file_size_bytes: int,
 ) -> None:
-    # Mimic paper Figure 6: orange prediction line, black min/max bars for measured avg.
+    """Paper Figure-6 style: prediction vs measurement."""
     _configure_matplotlib_paper_style()
-    fig, ax = plt.subplots(figsize=(6.4, 3.2))
+    fig, ax = plt.subplots(figsize=(7.0, 3.5))
 
+    x = list(range(len(mem_labels)))
+
+    # Vanilla prediction (flat dashed)
     ax.plot(
-        x_pct,
-        predicted_s,
-        color="#F58518",
-        linewidth=2.0,
-        label="BottleMod-SH prediction",
+        x,
+        vanilla_pred,
+        color="gray",
+        linewidth=1.5,
+        linestyle="--",
+        label="Vanilla BottleMod",
     )
 
+    # BottleMod-CA prediction
+    ax.plot(
+        x,
+        ca_pred,
+        color="#F58518",
+        linewidth=2.0,
+        label="BottleMod-CA prediction",
+    )
+
+    # Measured
     yerr = np.array(
         [
             np.array(mean_s) - np.array(min_s),
@@ -260,20 +397,51 @@ def _plot_fig6(
         ]
     )
     ax.errorbar(
-        x_pct,
+        x,
         mean_s,
         yerr=yerr,
-        fmt="none",
+        fmt="o",
+        color="black",
+        markersize=4,
         ecolor="black",
         elinewidth=1.0,
         capsize=3,
-        label="Measured (min/max)",
+        label="Measured (mean +/- min/max)",
     )
 
-    ax.set_xlabel("B size / cache budget (%)")
-    ax.set_ylabel("Total workflow time (s)")
-    ax.set_title(title)
-    ax.legend(frameon=True)
+    ax.set_xticks(x)
+    ax.set_xticklabels(mem_labels, rotation=45, ha="right")
+    ax.set_xlabel("Available system memory (cgroup limit)")
+    ax.set_ylabel("Runtime (s)")
+    ax.set_title(
+        f"FFmpeg Remux: Prediction vs Measurement  "
+        f"(file size: {_format_bytes_human(file_size_bytes)})"
+    )
+
+    # Annotate file size as vertical reference line
+    file_gb = file_size_bytes / (1024**3)
+    for i, lbl in enumerate(mem_labels):
+        mem_bytes = _parse_size_bytes(lbl)
+        if mem_bytes / (1024**3) >= file_gb:
+            ax.axvline(
+                x=i,
+                color="#E45756",
+                linewidth=1.0,
+                linestyle=":",
+                alpha=0.7,
+            )
+            ax.annotate(
+                f"file size\n({file_gb:.1f} GB)",
+                xy=(i, ax.get_ylim()[1]),
+                xytext=(i + 0.15, ax.get_ylim()[1] * 0.95),
+                fontsize=8,
+                color="#E45756",
+                ha="left",
+                va="top",
+            )
+            break
+
+    ax.legend(frameon=True, loc="best")
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=200)
@@ -283,105 +451,188 @@ def _plot_fig6(
 def _plot_fig7(
     *,
     out_path: Path,
-    baseline_progress_xy: list[tuple[float, float]],
-    fix_progress_xy: list[tuple[float, float]],
-    baseline_segments: list[tuple[float, float, str]],
-    fix_segments: list[tuple[float, float, str]],
-    baseline_total_s: float,
-    fix_total_s: float,
-    baseline_disk_rate: list[tuple[float, float, float, float]],
-    fix_disk_rate: list[tuple[float, float, float, float]],
+    cold_progress: Any,
+    cold_bottlenecks: list[int],
+    cold_task: StorageHierarchyTask,
+    warm_progress: Any,
+    warm_bottlenecks: list[int],
+    warm_task: StorageHierarchyTask,
+    disk_bw: float,
+    mem_bw: float,
 ) -> None:
-    """Paper Figure 7 style: 2x2 (baseline vs fix columns).
+    """Paper Figure-7 style: 2x2 bottleneck timeline + resource consumption.
 
-    baseline_segments/fix_segments: list of (t0, t1, label) with label in {A_disk, A_cache, B_disk}
-    baseline_disk_rate/fix_disk_rate: list of (t0, t1, A_rate, B_rate) in bytes/s
+    Top row:    progress (%) over time with bottleneck-coloured bands
+    Bottom row: resource consumption rates (bandwidth used vs available)
+    Left:       cold cache (low memory)
+    Right:      warm cache (high memory)
     """
     _configure_matplotlib_paper_style()
 
-    colors = {
-        "A_disk": "#F58518",  # orange
-        "A_cache": "#4C78A8",  # blue
-        "B_disk": "#54A24B",  # green
-    }
-
-    fig, axes = plt.subplots(2, 2, figsize=(8.2, 4.8), sharex="col")
-
-    def plot_progress(
-        ax: Axes,
-        progress_xy: list[tuple[float, float]],
-        segments: list[tuple[float, float, str]],
-        y_on_right: bool,
-    ) -> None:
-        for t0, t1, lbl in segments:
-            ax.axvspan(t0, t1, color=colors[lbl], alpha=0.25, linewidth=0)
-        xs = [t for t, _ in progress_xy]
-        ys = [p for _, p in progress_xy]
-        ax.plot(xs, ys, color="#4C78A8", linewidth=1.8)
-        ax.set_ylim(0, 100)
-        ax.set_ylabel("progress [%]")
-        if y_on_right:
-            ax.yaxis.set_label_position("right")
-            ax.yaxis.tick_right()
-        else:
-            ax.yaxis.set_label_position("left")
-            ax.yaxis.tick_left()
-
-    def plot_rates(
-        ax: Axes,
-        total_s: float,
-        rate_segments: list[tuple[float, float, float, float]],
-        y_on_right: bool,
-    ) -> None:
-        # Build piecewise-constant lines.
-        xs_a: list[float] = [0.0]
-        ys_a: list[float] = [0.0]
-        xs_b: list[float] = [0.0]
-        ys_b: list[float] = [0.0]
-        for t0, t1, a_rate, b_rate in rate_segments:
-            xs_a += [t0, t1]
-            ys_a += [a_rate / 1e6, a_rate / 1e6]
-            xs_b += [t0, t1]
-            ys_b += [b_rate / 1e6, b_rate / 1e6]
-        xs_a.append(total_s)
-        ys_a.append(0.0)
-        xs_b.append(total_s)
-        ys_b.append(0.0)
-        ax.plot(xs_a, ys_a, color="#F58518", linewidth=2.0, label="A disk")
-        ax.plot(
-            xs_b, ys_b, color="#54A24B", linewidth=2.0, linestyle="--", label="B disk"
-        )
-        ax.set_ylabel("data rate [MB/second]")
-        ax.set_xlabel("time [seconds]")
-        if y_on_right:
-            ax.yaxis.set_label_position("right")
-            ax.yaxis.tick_right()
-        else:
-            ax.yaxis.set_label_position("left")
-            ax.yaxis.tick_left()
-
-    # Top row: progress + bottlenecks
-    plot_progress(axes[0][0], baseline_progress_xy, baseline_segments, y_on_right=False)
-    plot_progress(axes[0][1], fix_progress_xy, fix_segments, y_on_right=True)
-    axes[0][0].set_title("Baseline (A→B→A)")
-    axes[0][1].set_title("Fix (A→A→B)")
-
-    # Legend like paper: "Limited by"
-    from matplotlib.patches import Patch
-
-    legend_elems = [
-        Patch(facecolor=colors["A_disk"], alpha=0.25, label="A from disk"),
-        Patch(facecolor=colors["A_cache"], alpha=0.25, label="A from cache"),
-        Patch(facecolor=colors["B_disk"], alpha=0.25, label="B from disk"),
-    ]
-    axes[0][0].legend(
-        handles=legend_elems, title="Limited by:", frameon=True, loc="upper left"
+    fig, ((ax_prog_cold, ax_prog_warm), (ax_res_cold, ax_res_warm)) = plt.subplots(
+        2,
+        2,
+        figsize=(9.0, 5.5),
+        gridspec_kw={"height_ratios": [1.2, 1]},
     )
 
-    # Bottom row: disk data rates
-    plot_rates(axes[1][0], baseline_total_s, baseline_disk_rate, y_on_right=False)
-    plot_rates(axes[1][1], fix_total_s, fix_disk_rate, y_on_right=True)
-    axes[1][1].legend(frameon=True, loc="upper right")
+    def _plot_progress_panel(ax, progress, bottlenecks, sh_task, title):
+        T_end = float(progress.x[-1])
+        for i, seg_x in enumerate(progress.x[:-1]):
+            seg_end = progress.x[i + 1]
+            if i < len(bottlenecks):
+                cat = _bottleneck_category(bottlenecks[i], sh_task)
+                color = COLOR_MAP.get(cat, "#999999")
+            else:
+                color = "#999999"
+            ax.axvspan(
+                float(seg_x), float(seg_end), color=color, alpha=0.25, linewidth=0
+            )
+
+        xs = np.linspace(float(progress.x[0]), T_end, 500)
+        max_val = float(progress(T_end))
+        ys = [
+            float(progress(xv)) / max_val * 100.0 if max_val > 0 else 0.0 for xv in xs
+        ]
+        ax.plot(xs, ys, color="#4C78A8", linewidth=1.8)
+        ax.set_ylim(0, 105)
+        ax.set_title(title)
+
+    def _plot_resource_panel(
+        ax, progress, bottlenecks, sh_task, disk_bw_val, mem_bw_val
+    ):
+        """Plot bandwidth usage per tier over time (like paper's bottom row).
+
+        For each segment, the consumed bandwidth of a tier equals:
+            consumed_bw = progress_derivative(t) * tier_requirement_rate(progress(t))
+
+        We show:
+          - dashed line: available bandwidth (constant, I_{R,l})
+          - solid line:  consumed bandwidth
+        """
+        T_end = float(progress.x[-1])
+        xs = np.linspace(float(progress.x[0]), T_end, 500)
+
+        dprog = progress.derivative()
+
+        # Tier resource functions come from sh_task
+        # Resource order: [CPU_0, PageCache_bw_read, PageCache_bw_write, Disk_bw_read, Disk_bw_write]
+        # We care about bw_read for PageCache (index 1) and Disk (index 3)
+        all_cpu_funcs = sh_task._derived_cpu_funcs  # [cpu, pc_r, pc_w, disk_r, disk_w]
+        pc_req_rate = all_cpu_funcs[1]  # R'_{PageCache,bw,r}(p) = H_cache * A'_read
+        disk_req_rate = all_cpu_funcs[3]  # R'_{Disk,bw,r}(p) = H_disk * A'_read
+
+        # Consumed bandwidth at time t = dprog/dt * R'(progress(t))
+        pc_consumed = []
+        disk_consumed = []
+        for xv in xs:
+            dp = max(float(dprog(xv)), 0.0)
+            prog_val = float(progress(xv))
+            try:
+                pc_r = float(pc_req_rate(prog_val))
+            except Exception:
+                pc_r = 0.0
+            try:
+                dk_r = float(disk_req_rate(prog_val))
+            except Exception:
+                dk_r = 0.0
+            pc_consumed.append(dp * pc_r / 1e6)  # MB/s
+            disk_consumed.append(dp * dk_r / 1e6)  # MB/s
+
+        # Available (constant lines)
+        ax.axhline(
+            y=mem_bw_val / 1e6,
+            color=COLOR_MAP["memory_bw"],
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.6,
+        )
+        ax.axhline(
+            y=disk_bw_val / 1e6,
+            color=COLOR_MAP["disk_bw"],
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.6,
+        )
+
+        # Consumed
+        ax.plot(
+            xs,
+            pc_consumed,
+            color=COLOR_MAP["memory_bw"],
+            linewidth=1.5,
+            label="PageCache used",
+        )
+        ax.plot(
+            xs,
+            disk_consumed,
+            color=COLOR_MAP["disk_bw"],
+            linewidth=1.5,
+            label="Disk used",
+        )
+
+        ax.set_xlabel("time (s)")
+        max_bw = max(mem_bw_val, disk_bw_val) / 1e6
+        ax.set_ylim(0, max_bw * 1.15)
+
+    # Top row: progress
+    _plot_progress_panel(
+        ax_prog_cold,
+        cold_progress,
+        cold_bottlenecks,
+        cold_task,
+        "Cold cache (low memory)",
+    )
+    ax_prog_cold.set_ylabel("progress (%)")
+    ax_prog_cold.tick_params(axis="x", labelbottom=False)
+
+    _plot_progress_panel(
+        ax_prog_warm,
+        warm_progress,
+        warm_bottlenecks,
+        warm_task,
+        "Warm cache (high memory)",
+    )
+    ax_prog_warm.tick_params(axis="x", labelbottom=False)
+
+    # Bottom row: resource consumption
+    _plot_resource_panel(
+        ax_res_cold, cold_progress, cold_bottlenecks, cold_task, disk_bw, mem_bw
+    )
+    ax_res_cold.set_ylabel("bandwidth (MB/s)")
+
+    _plot_resource_panel(
+        ax_res_warm, warm_progress, warm_bottlenecks, warm_task, disk_bw, mem_bw
+    )
+
+    # Shared legend
+    legend_elems = [
+        Patch(facecolor=COLOR_MAP["disk_bw"], alpha=0.25, label="Disk-bound"),
+        Patch(facecolor=COLOR_MAP["memory_bw"], alpha=0.25, label="Memory-bound"),
+        Line2D(
+            [0], [0], color=COLOR_MAP["disk_bw"], linewidth=1.5, label="Disk BW used"
+        ),
+        Line2D(
+            [0],
+            [0],
+            color=COLOR_MAP["memory_bw"],
+            linewidth=1.5,
+            label="PageCache BW used",
+        ),
+        Line2D(
+            [0], [0], color="gray", linewidth=1.0, linestyle="--", label="BW available"
+        ),
+    ]
+    ax_prog_cold.legend(
+        handles=legend_elems[:2],
+        title="Bottleneck:",
+        frameon=True,
+        loc="lower right",
+        fontsize=8,
+    )
+    ax_res_cold.legend(
+        handles=legend_elems[2:], frameon=True, loc="upper right", fontsize=8
+    )
 
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -389,253 +640,605 @@ def _plot_fig7(
     plt.close(fig)
 
 
+# ===========================================================================
+# Two-video workflow: task reordering experiment
+# ===========================================================================
+
+
+def _predict_two_video_workflow_ca(
+    file_size_a: float,
+    file_size_b: float,
+    disk_bw: float,
+    mem_bw: float,
+    mem_limit: int,
+    order: str,
+) -> Tuple[float, Any, list, Any, list, StorageHierarchyTask, StorageHierarchyTask]:
+    """Model two sequential ffmpeg remux tasks under a shared memory limit.
+
+    *order*: "AB" (A first then B) or "BA" (B first then A).
+
+    After the first task completes, its pages may remain in cache, affecting
+    the hit rate of the second task.  For simplicity we assume sequential
+    (no-reuse) access: pages from task 1 partially evict task 2's working set.
+
+    Returns (total_time, prog1, bn1, prog2, bn2, sh_task1, sh_task2).
+    """
+    if order == "AB":
+        size1, size2 = file_size_a, file_size_b
+    else:
+        size1, size2 = file_size_b, file_size_a
+
+    # Task 1: cold start (drop caches assumed), hit_rate = mem_limit / size1
+    hit1 = min(1.0, mem_limit / size1)
+    t1, prog1, bn1, sh1 = predict_cache_aware(size1, disk_bw, mem_bw, hit1)
+
+    # Task 2: after task 1, the page cache holds pages from task 1's file.
+    # If mem_limit > size1, there's (mem_limit - size1) bytes of free cache
+    # for task 2.  If mem_limit <= size1, cache is full of task 1 pages which
+    # are useless for task 2 -> cold start.
+    remaining_cache = max(0, mem_limit - size1)
+    hit2 = min(1.0, remaining_cache / size2)
+    t2, prog2, bn2, sh2 = predict_cache_aware(size2, disk_bw, mem_bw, hit2)
+
+    return (t1 + t2, prog1, bn1, prog2, bn2, sh1, sh2)
+
+
+def _run_two_video_sequential(
+    video1: Path,
+    video2: Path,
+    out_dir: Path,
+    *,
+    mem_limit: int,
+    drop_caches: bool,
+) -> float:
+    """Run two ffmpeg remux tasks sequentially under one cgroup memory limit.
+
+    Returns total wall-clock time for both tasks.
+    """
+    tmp_out = out_dir / "tmp_workflow_output.mp4"
+
+    if drop_caches:
+        _sudo_drop_caches()
+
+    # Task 1
+    t1 = _run_ffmpeg_remux(video1, tmp_out, mem_limit=mem_limit)
+    # Task 2 (don't drop caches between -- cache state from task 1 persists)
+    t2 = _run_ffmpeg_remux(video2, tmp_out, mem_limit=mem_limit)
+
+    return t1 + t2
+
+
+def _plot_fig8_reordering(
+    *,
+    out_path: Path,
+    mem_labels: list[str],
+    pred_ab: list[float],
+    pred_ba: list[float],
+    meas_ab: list[float],
+    meas_ba: list[float],
+    file_size_a: int,
+    file_size_b: int,
+) -> None:
+    """Figure 8: two-video workflow -- task ordering comparison.
+
+    Shows that processing the smaller video first can be faster because its
+    pages leave more cache room for the larger video.
+    """
+    _configure_matplotlib_paper_style()
+    fig, ax = plt.subplots(figsize=(7.0, 3.8))
+
+    x = list(range(len(mem_labels)))
+    width = 0.18
+
+    # Predictions
+    ax.plot(
+        x,
+        pred_ab,
+        color="#F58518",
+        linewidth=2.0,
+        linestyle="-",
+        marker="^",
+        markersize=5,
+        label="CA pred: A->B",
+    )
+    ax.plot(
+        x,
+        pred_ba,
+        color="#4C78A8",
+        linewidth=2.0,
+        linestyle="-",
+        marker="v",
+        markersize=5,
+        label="CA pred: B->A",
+    )
+
+    # Measurements
+    ax.bar(
+        [xi - width for xi in x],
+        meas_ab,
+        width=width * 2,
+        color="#F58518",
+        alpha=0.3,
+        label="Measured A->B",
+    )
+    ax.bar(
+        [xi + width for xi in x],
+        meas_ba,
+        width=width * 2,
+        color="#4C78A8",
+        alpha=0.3,
+        label="Measured B->A",
+    )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(mem_labels, rotation=45, ha="right")
+    ax.set_xlabel("Available system memory (cgroup limit)")
+    ax.set_ylabel("Total workflow runtime (s)")
+    ax.set_title(
+        f"Two-Video Workflow: Task Ordering\n"
+        f"A = {_format_bytes_human(file_size_a)}, "
+        f"B = {_format_bytes_human(file_size_b)}"
+    )
+    ax.legend(frameon=True, loc="best", fontsize=8)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+
+
+def _plot_fig9_bottleneck_reorder(
+    *,
+    out_path: Path,
+    prog1_best: Any,
+    bn1_best: list,
+    sh1_best: StorageHierarchyTask,
+    prog2_best: Any,
+    bn2_best: list,
+    sh2_best: StorageHierarchyTask,
+    prog1_worst: Any,
+    bn1_worst: list,
+    sh1_worst: StorageHierarchyTask,
+    prog2_worst: Any,
+    bn2_worst: list,
+    sh2_worst: StorageHierarchyTask,
+    best_label: str,
+    worst_label: str,
+    disk_bw: float,
+    mem_bw: float,
+) -> None:
+    """Figure 9: 2x2 progress + bottleneck timeline for best vs worst ordering.
+
+    Left column:  best ordering (e.g. B->A)
+    Right column: worst ordering (e.g. A->B)
+    Top row:      task 1 progress
+    Bottom row:   task 2 progress
+    """
+    _configure_matplotlib_paper_style()
+
+    fig, ((ax_t1_best, ax_t1_worst), (ax_t2_best, ax_t2_worst)) = plt.subplots(
+        2,
+        2,
+        figsize=(9.0, 5.5),
+    )
+
+    def _plot_panel(ax, progress, bottlenecks, sh_task, title):
+        T_end = float(progress.x[-1])
+        for i, seg_x in enumerate(progress.x[:-1]):
+            seg_end = progress.x[i + 1]
+            if i < len(bottlenecks):
+                cat = _bottleneck_category(bottlenecks[i], sh_task)
+                color = COLOR_MAP.get(cat, "#999999")
+            else:
+                color = "#999999"
+            ax.axvspan(
+                float(seg_x), float(seg_end), color=color, alpha=0.25, linewidth=0
+            )
+
+        xs = np.linspace(float(progress.x[0]), T_end, 500)
+        max_val = float(progress(T_end))
+        ys = [
+            float(progress(xv)) / max_val * 100.0 if max_val > 0 else 0.0 for xv in xs
+        ]
+        ax.plot(xs, ys, color="#4C78A8", linewidth=1.8)
+        ax.set_ylim(0, 105)
+        ax.set_title(title, fontsize=9)
+
+    t1_best_time = float(prog1_best.x[-1])
+    t2_best_time = float(prog2_best.x[-1])
+    t1_worst_time = float(prog1_worst.x[-1])
+    t2_worst_time = float(prog2_worst.x[-1])
+
+    _plot_panel(
+        ax_t1_best,
+        prog1_best,
+        bn1_best,
+        sh1_best,
+        f"{best_label}: Task 1 ({t1_best_time:.1f}s)",
+    )
+    ax_t1_best.set_ylabel("progress (%)")
+    ax_t1_best.tick_params(axis="x", labelbottom=False)
+
+    _plot_panel(
+        ax_t1_worst,
+        prog1_worst,
+        bn1_worst,
+        sh1_worst,
+        f"{worst_label}: Task 1 ({t1_worst_time:.1f}s)",
+    )
+    ax_t1_worst.tick_params(axis="x", labelbottom=False)
+
+    _plot_panel(
+        ax_t2_best,
+        prog2_best,
+        bn2_best,
+        sh2_best,
+        f"{best_label}: Task 2 ({t2_best_time:.1f}s)",
+    )
+    ax_t2_best.set_ylabel("progress (%)")
+    ax_t2_best.set_xlabel("time (s)")
+
+    _plot_panel(
+        ax_t2_worst,
+        prog2_worst,
+        bn2_worst,
+        sh2_worst,
+        f"{worst_label}: Task 2 ({t2_worst_time:.1f}s)",
+    )
+    ax_t2_worst.set_xlabel("time (s)")
+
+    # Suptitle with totals
+    fig.suptitle(
+        f"Best order: {best_label} = {t1_best_time + t2_best_time:.1f}s total  |  "
+        f"Worst order: {worst_label} = {t1_worst_time + t2_worst_time:.1f}s total",
+        fontsize=10,
+        y=1.01,
+    )
+
+    legend_elems = [
+        Patch(facecolor=COLOR_MAP["disk_bw"], alpha=0.25, label="Disk-bound"),
+        Patch(facecolor=COLOR_MAP["memory_bw"], alpha=0.25, label="Memory-bound"),
+    ]
+    ax_t1_best.legend(
+        handles=legend_elems,
+        title="Bottleneck:",
+        frameon=True,
+        loc="lower right",
+        fontsize=7,
+    )
+
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+# ===========================================================================
+# Main
+# ===========================================================================
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--cache-bytes", default="4G")
-    ap.add_argument("--a-bytes", default="2G")
+    ap = argparse.ArgumentParser(
+        description="Experiment 1: BottleMod-CA vs vanilla for ffmpeg remux"
+    )
+    ap.add_argument("--video", required=True, help="Path to input video file (video A)")
     ap.add_argument(
-        "--b-bytes-sweep",
-        default="0,1G,2G,3G,4G,6G,8G",
-        help="Comma-separated sizes for B sweep (e.g., 0,1G,2G)",
+        "--video2",
+        default=None,
+        help="Path to second video file (video B) for reordering experiment",
+    )
+    ap.add_argument("--out-dir", required=True, help="Output directory")
+    ap.add_argument(
+        "--mem-sweep",
+        default="256M,512M,1G,2G,4G,8G,16G",
+        help="Comma-separated cgroup memory limits",
     )
     ap.add_argument("--trials", type=int, default=5)
     ap.add_argument("--drop-caches", action="store_true")
-    ap.add_argument("--cache-effective-fraction", type=float, default=0.85)
-    ap.add_argument("--data-dir", default="/var/tmp/bottlemod_thesis_exp1")
     args = ap.parse_args()
+
+    video = Path(args.video).resolve()
+    if not video.exists():
+        print(f"Error: video file not found: {video}", file=sys.stderr)
+        sys.exit(1)
+
+    video2 = None
+    if args.video2:
+        video2 = Path(args.video2).resolve()
+        if not video2.exists():
+            print(f"Error: video2 file not found: {video2}", file=sys.stderr)
+            sys.exit(1)
 
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    data_dir = Path(args.data_dir)
-    data_dir.mkdir(parents=True, exist_ok=True)
 
-    cache_bytes = _parse_size_bytes(args.cache_bytes)
-    a_bytes = _parse_size_bytes(args.a_bytes)
-    b_sweep = [_parse_size_bytes(x) for x in args.b_bytes_sweep.split(",") if x.strip()]
+    mem_sweep = [_parse_size_bytes(x) for x in args.mem_sweep.split(",") if x.strip()]
 
-    file_a = data_dir / f"fileA_{a_bytes}.bin"
-    _ensure_file(file_a, a_bytes)
+    # ------------------------------------------------------------------
+    # Calibration
+    # ------------------------------------------------------------------
+    disk_bw, mem_bw, file_size = calibrate(
+        video,
+        out_dir,
+        drop_caches=args.drop_caches,
+        cold_mem_limit=min(mem_sweep),
+        warm_mem_limit=max(mem_sweep),
+    )
 
-    # We'll re-create B per size to avoid fragmentation surprises.
-    # (Re-using a max-sized file would be fine too.)
+    file_size2 = video2.stat().st_size if video2 else 0
 
-    # Calibration: disk_bw (cold) and mem_bw (warm)
-    calib_dir = out_dir / "calibration"
-    calib_dir.mkdir(exist_ok=True)
-    if args.drop_caches:
-        _sudo_drop_caches()
-    cold_payload = _fio_sequential_read(file_a, a_bytes, calib_dir / "A_cold.json")
-    cold = _aggregate_fio(cold_payload)
-    warm_payload = _fio_sequential_read(file_a, a_bytes, calib_dir / "A_warm.json")
-    warm = _aggregate_fio(warm_payload)
-    disk_bw = a_bytes / max(cold.runtime_s, 1e-9)
-    mem_bw = a_bytes / max(warm.runtime_s, 1e-9)
-
-    c_eff = cache_bytes * float(args.cache_effective_fraction)
-
+    # ------------------------------------------------------------------
+    # Measurement + prediction sweep (single video)
+    # ------------------------------------------------------------------
     results: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 3,
         "meta": {
             "host": platform.node(),
             "platform": platform.platform(),
             "python": sys.version,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-            "cache_bytes": cache_bytes,
-            "cache_effective_fraction": float(args.cache_effective_fraction),
-            "cache_effective_bytes": c_eff,
-            "a_bytes": a_bytes,
-            "b_sweep_bytes": b_sweep,
-            "trials": int(args.trials),
-            "drop_caches": bool(args.drop_caches),
+            "video": str(video),
+            "file_size_bytes": file_size,
+            "video2": str(video2) if video2 else None,
+            "file_size2_bytes": file_size2 if video2 else None,
+            "mem_sweep_bytes": mem_sweep,
+            "trials": args.trials,
+            "drop_caches": args.drop_caches,
             "disk_bw_bytes_s": disk_bw,
             "mem_bw_bytes_s": mem_bw,
         },
-        "series": {},
+        "points": [],
+        "reorder": [],
     }
 
-    series: dict[str, Any] = {}
+    tmp_out = out_dir / "tmp_output.mp4"
 
-    for ordering in ("ABA", "AAB"):
-        series[ordering] = {"points": []}
+    for mem_limit in mem_sweep:
+        label = _format_bytes(mem_limit)
+        hit_rate = min(1.0, mem_limit / file_size)
 
-    for b_bytes in b_sweep:
-        file_b = data_dir / f"fileB_{b_bytes}.bin"
-        if b_bytes > 0:
-            _ensure_file(file_b, b_bytes)
-        else:
-            # fio expects a filename; reuse A but size 0 makes job a no-op.
-            file_b = file_a
-
-        x_pct = 100.0 * (b_bytes / cache_bytes)
-
-        # Simple reuse heuristic for baseline: fraction of A retained after reading B.
-        # If B fits in remaining cache, A stays (hit=1). If B exceeds cache, A is evicted (hit=0).
-        # Linear interpolation for partial eviction.
-        # Clamp in [0,1].
-        if b_bytes <= max(0.0, c_eff - a_bytes):
-            a2_hit = 1.0
-        else:
-            a2_hit = max(0.0, min(1.0, (c_eff - float(b_bytes)) / float(a_bytes)))
-
-        pred_a_cold = a_bytes / disk_bw
-        pred_b_cold = b_bytes / disk_bw if b_bytes > 0 else 0.0
-        pred_a_warm = a_bytes / mem_bw
-        pred_a2_mix = (a2_hit * a_bytes) / mem_bw + ((1.0 - a2_hit) * a_bytes) / disk_bw
-
-        pred_aba = pred_a_cold + pred_b_cold + pred_a2_mix
-        pred_aab = pred_a_cold + pred_a_warm + pred_b_cold
-
-        point: dict[str, Any] = {
-            "b_bytes": b_bytes,
-            "x_pct": x_pct,
-            "predicted_total_s": {"ABA": pred_aba, "AAB": pred_aab},
-            "predicted_a2_hit_rate": a2_hit,
-            "measured": {"ABA": [], "AAB": []},
-        }
-
-        for ordering in ("ABA", "AAB"):
-            for trial in range(1, int(args.trials) + 1):
-                meas = _run_workflow_once(
-                    out_dir=out_dir,
-                    ordering=ordering,
-                    file_a=file_a,
-                    file_b=file_b,
-                    a_size=a_bytes,
-                    b_size=b_bytes,
-                    trial_idx=trial,
-                    drop_caches=bool(args.drop_caches),
-                )
-                # normalize missing jobs in size=0 case
-                a1 = meas.get("A1")
-                a2 = meas.get("A2")
-                b = meas.get("B")
-                if a1 is None or a2 is None or b is None:
-                    raise RuntimeError(
-                        f"Missing expected fio jobs in output: {sorted(meas.keys())}"
-                    )
-                total = a1.runtime_s + a2.runtime_s + b.runtime_s
-                point["measured"][ordering].append(
-                    {
-                        "trial": trial,
-                        "A1_s": a1.runtime_s,
-                        "A2_s": a2.runtime_s,
-                        "B_s": b.runtime_s,
-                        "total_s": total,
-                        "A1_bw": a1.bw_bytes_s,
-                        "A2_bw": a2.bw_bytes_s,
-                        "B_bw": b.bw_bytes_s,
-                    }
-                )
-
-        series.setdefault("points", []).append(point)
-
-    # Reformat series to per-ordering, keep points list identical order
-    points = series["points"]
-    results["series"] = {"points": points}
-
-    out_json = out_dir / "exp1_cache_aware_ordering_results.json"
-    out_json.write_text(json.dumps(results, indent=2), encoding="utf-8")
-
-    # Build Figure-6 style plots for baseline and fix
-    x = [p["x_pct"] for p in points]
-    for ordering, title in [("ABA", "Baseline (A→B→A)"), ("AAB", "Fix (A→A→B)")]:
-        means: list[float] = []
-        mins: list[float] = []
-        maxs: list[float] = []
-        preds: list[float] = []
-        for p in points:
-            totals = [m["total_s"] for m in p["measured"][ordering]]
-            means.append(float(np.mean(totals)))
-            mins.append(float(np.min(totals)))
-            maxs.append(float(np.max(totals)))
-            preds.append(float(p["predicted_total_s"][ordering]))
-        _plot_fig6(
-            out_path=out_dir / f"fig6_exp1_{ordering}.png",
-            x_pct=x,
-            predicted_s=preds,
-            mean_s=means,
-            min_s=mins,
-            max_s=maxs,
-            title=title,
+        # Predictions
+        vanilla_time = predict_vanilla(float(file_size), disk_bw)
+        ca_time, _, _, _ = predict_cache_aware(
+            float(file_size), disk_bw, mem_bw, hit_rate
         )
 
-    # Figure-7 style: choose a representative "large B" point (max B)
-    p_big = max(points, key=lambda p: int(p["b_bytes"]))
-    b_big = int(p_big["b_bytes"])
-    # Use predictions to construct segments.
-    tA_cold = a_bytes / disk_bw
-    tB = b_big / disk_bw if b_big > 0 else 0.0
-    # baseline A2 uses mix; show as disk if hit<0.5 else cache
-    hit = float(p_big["predicted_a2_hit_rate"])
-    tA2_base = float(p_big["predicted_total_s"]["ABA"]) - (tA_cold + tB)
-    tA2_fix = a_bytes / mem_bw
+        print(f"\nMemory limit: {label}  hit_rate={hit_rate:.3f}")
+        print(f"  Vanilla prediction: {vanilla_time:.2f}s")
+        print(f"  CA prediction:      {ca_time:.2f}s")
 
-    base_segments: list[tuple[float, float, str]] = []
-    t = 0.0
-    base_segments.append((t, t + tA_cold, "A_disk"))
-    t += tA_cold
-    if tB > 0:
-        base_segments.append((t, t + tB, "B_disk"))
-        t += tB
-    base_segments.append((t, t + tA2_base, "A_disk" if hit < 0.95 else "A_cache"))
-    base_total = t + tA2_base
+        # Measurements
+        trial_times: list[float] = []
+        for trial in range(1, args.trials + 1):
+            t = _run_ffmpeg_remux(
+                video,
+                tmp_out,
+                mem_limit=mem_limit,
+                drop_caches=args.drop_caches,
+            )
+            trial_times.append(t)
+            print(f"  Trial {trial}: {t:.2f}s")
 
-    fix_segments: list[tuple[float, float, str]] = []
-    t = 0.0
-    fix_segments.append((t, t + tA_cold, "A_disk"))
-    t += tA_cold
-    fix_segments.append((t, t + tA2_fix, "A_cache"))
-    t += tA2_fix
-    if tB > 0:
-        fix_segments.append((t, t + tB, "B_disk"))
-        t += tB
-    fix_total = t
+        results["points"].append(
+            {
+                "mem_limit_bytes": mem_limit,
+                "mem_limit_label": label,
+                "hit_rate": hit_rate,
+                "vanilla_predicted_s": vanilla_time,
+                "ca_predicted_s": ca_time,
+                "measured_trials_s": trial_times,
+                "measured_mean_s": float(np.mean(trial_times)),
+                "measured_min_s": float(np.min(trial_times)),
+                "measured_max_s": float(np.max(trial_times)),
+            }
+        )
 
-    base_rates: list[tuple[float, float, float, float]] = []
-    t = 0.0
-    base_rates.append((t, t + tA_cold, disk_bw, 0.0))
-    t += tA_cold
-    if tB > 0:
-        base_rates.append((t, t + tB, 0.0, disk_bw))
-        t += tB
-    base_rates.append((t, t + tA2_base, disk_bw, 0.0))
+    # ------------------------------------------------------------------
+    # Two-video reordering experiment
+    # ------------------------------------------------------------------
+    if video2 is not None:
+        print("\n" + "=" * 60)
+        print("Two-video reordering experiment")
+        print(f"  Video A: {video} ({_format_bytes_human(file_size)})")
+        print(f"  Video B: {video2} ({_format_bytes_human(file_size2)})")
+        print("=" * 60)
 
-    fix_rates: list[tuple[float, float, float, float]] = []
-    t = 0.0
-    fix_rates.append((t, t + tA_cold, disk_bw, 0.0))
-    t += tA_cold
-    fix_rates.append((t, t + tA2_fix, 0.0, 0.0))
-    t += tA2_fix
-    if tB > 0:
-        fix_rates.append((t, t + tB, 0.0, disk_bw))
+        for mem_limit in mem_sweep:
+            label = _format_bytes(mem_limit)
 
+            # Predictions
+            total_ab, _, _, _, _, _, _ = _predict_two_video_workflow_ca(
+                float(file_size),
+                float(file_size2),
+                disk_bw,
+                mem_bw,
+                mem_limit,
+                order="AB",
+            )
+            total_ba, _, _, _, _, _, _ = _predict_two_video_workflow_ca(
+                float(file_size),
+                float(file_size2),
+                disk_bw,
+                mem_bw,
+                mem_limit,
+                order="BA",
+            )
+
+            print(f"\nMemory limit: {label}")
+            print(f"  CA pred A->B: {total_ab:.2f}s")
+            print(f"  CA pred B->A: {total_ba:.2f}s")
+
+            # Measurements: A->B
+            ab_times: list[float] = []
+            for trial in range(1, args.trials + 1):
+                t = _run_two_video_sequential(
+                    video,
+                    video2,
+                    out_dir,
+                    mem_limit=mem_limit,
+                    drop_caches=args.drop_caches,
+                )
+                ab_times.append(t)
+                print(f"  A->B trial {trial}: {t:.2f}s")
+
+            # Measurements: B->A
+            ba_times: list[float] = []
+            for trial in range(1, args.trials + 1):
+                t = _run_two_video_sequential(
+                    video2,
+                    video,
+                    out_dir,
+                    mem_limit=mem_limit,
+                    drop_caches=args.drop_caches,
+                )
+                ba_times.append(t)
+                print(f"  B->A trial {trial}: {t:.2f}s")
+
+            results["reorder"].append(
+                {
+                    "mem_limit_bytes": mem_limit,
+                    "mem_limit_label": label,
+                    "pred_ab_s": total_ab,
+                    "pred_ba_s": total_ba,
+                    "meas_ab_trials_s": ab_times,
+                    "meas_ba_trials_s": ba_times,
+                    "meas_ab_mean_s": float(np.mean(ab_times)),
+                    "meas_ba_mean_s": float(np.mean(ba_times)),
+                }
+            )
+
+    # ------------------------------------------------------------------
+    # Write results
+    # ------------------------------------------------------------------
+    out_json = out_dir / "exp1_results.json"
+    out_json.write_text(json.dumps(results, indent=2), encoding="utf-8")
+    print(f"\nResults written to: {out_json}")
+
+    # ------------------------------------------------------------------
+    # Plot: Figure-6 style (prediction vs measurement)
+    # ------------------------------------------------------------------
+    points = results["points"]
+    mem_labels = [p["mem_limit_label"] for p in points]
+
+    fig6_path = out_dir / "fig6_exp1.png"
+    _plot_fig6(
+        out_path=fig6_path,
+        mem_labels=mem_labels,
+        vanilla_pred=[p["vanilla_predicted_s"] for p in points],
+        ca_pred=[p["ca_predicted_s"] for p in points],
+        mean_s=[p["measured_mean_s"] for p in points],
+        min_s=[p["measured_min_s"] for p in points],
+        max_s=[p["measured_max_s"] for p in points],
+        file_size_bytes=file_size,
+    )
+    print(f"Figure 6: {fig6_path}")
+
+    # ------------------------------------------------------------------
+    # Plot: Figure-7 style (2x2 bottleneck timeline + resource consumption)
+    # ------------------------------------------------------------------
+    cold_hit = points[0]["hit_rate"]
+    warm_hit = points[-1]["hit_rate"]
+
+    _, cold_progress, cold_bn, cold_sh = predict_cache_aware(
+        float(file_size), disk_bw, mem_bw, cold_hit
+    )
+    _, warm_progress, warm_bn, warm_sh = predict_cache_aware(
+        float(file_size), disk_bw, mem_bw, warm_hit
+    )
+
+    fig7_path = out_dir / "fig7_exp1_cold_vs_warm.png"
     _plot_fig7(
-        out_path=out_dir / "fig7_exp1_baseline_vs_fix.png",
-        baseline_progress_xy=[
-            (0.0, 0.0),
-            (tA_cold, 100.0 * (a_bytes / (2 * a_bytes + b_big))),
-            (tA_cold + tB, 100.0 * ((a_bytes + b_big) / (2 * a_bytes + b_big))),
-            (base_total, 100.0),
-        ],
-        fix_progress_xy=[
-            (0.0, 0.0),
-            (tA_cold, 100.0 * (a_bytes / (2 * a_bytes + b_big))),
-            (tA_cold + tA2_fix, 100.0 * ((2 * a_bytes) / (2 * a_bytes + b_big))),
-            (fix_total, 100.0),
-        ],
-        baseline_segments=base_segments,
-        fix_segments=fix_segments,
-        baseline_total_s=base_total,
-        fix_total_s=fix_total,
-        baseline_disk_rate=base_rates,
-        fix_disk_rate=fix_rates,
+        out_path=fig7_path,
+        cold_progress=cold_progress,
+        cold_bottlenecks=cold_bn,
+        cold_task=cold_sh,
+        warm_progress=warm_progress,
+        warm_bottlenecks=warm_bn,
+        warm_task=warm_sh,
+        disk_bw=disk_bw,
+        mem_bw=mem_bw,
     )
+    print(f"Figure 7: {fig7_path}")
 
-    print(f"Wrote results: {out_json}")
-    print(
-        f"Plots: {out_dir}/fig6_exp1_ABA.png, {out_dir}/fig6_exp1_AAB.png, {out_dir}/fig7_exp1_baseline_vs_fix.png"
-    )
+    # ------------------------------------------------------------------
+    # Plot: Figure-8 & 9 (two-video reordering)
+    # ------------------------------------------------------------------
+    if video2 is not None and results["reorder"]:
+        reorder = results["reorder"]
+        reorder_labels = [r["mem_limit_label"] for r in reorder]
+
+        fig8_path = out_dir / "fig8_reordering.png"
+        _plot_fig8_reordering(
+            out_path=fig8_path,
+            mem_labels=reorder_labels,
+            pred_ab=[r["pred_ab_s"] for r in reorder],
+            pred_ba=[r["pred_ba_s"] for r in reorder],
+            meas_ab=[r["meas_ab_mean_s"] for r in reorder],
+            meas_ba=[r["meas_ba_mean_s"] for r in reorder],
+            file_size_a=file_size,
+            file_size_b=file_size2,
+        )
+        print(f"Figure 8: {fig8_path}")
+
+        # Fig 9: bottleneck detail for a memory limit where ordering matters
+        # Pick the limit where |pred_ab - pred_ba| is largest
+        diffs = [abs(r["pred_ab_s"] - r["pred_ba_s"]) for r in reorder]
+        best_idx = int(np.argmax(diffs))
+        best_mem = reorder[best_idx]["mem_limit_bytes"]
+
+        total_ab, p1_ab, b1_ab, p2_ab, b2_ab, sh1_ab, sh2_ab = (
+            _predict_two_video_workflow_ca(
+                float(file_size),
+                float(file_size2),
+                disk_bw,
+                mem_bw,
+                best_mem,
+                order="AB",
+            )
+        )
+        total_ba, p1_ba, b1_ba, p2_ba, b2_ba, sh1_ba, sh2_ba = (
+            _predict_two_video_workflow_ca(
+                float(file_size),
+                float(file_size2),
+                disk_bw,
+                mem_bw,
+                best_mem,
+                order="BA",
+            )
+        )
+
+        if total_ab <= total_ba:
+            best_label, worst_label = "A->B", "B->A"
+            best_args = (p1_ab, b1_ab, sh1_ab, p2_ab, b2_ab, sh2_ab)
+            worst_args = (p1_ba, b1_ba, sh1_ba, p2_ba, b2_ba, sh2_ba)
+        else:
+            best_label, worst_label = "B->A", "A->B"
+            best_args = (p1_ba, b1_ba, sh1_ba, p2_ba, b2_ba, sh2_ba)
+            worst_args = (p1_ab, b1_ab, sh1_ab, p2_ab, b2_ab, sh2_ab)
+
+        fig9_path = out_dir / "fig9_bottleneck_reorder.png"
+        _plot_fig9_bottleneck_reorder(
+            out_path=fig9_path,
+            prog1_best=best_args[0],
+            bn1_best=best_args[1],
+            sh1_best=best_args[2],
+            prog2_best=best_args[3],
+            bn2_best=best_args[4],
+            sh2_best=best_args[5],
+            prog1_worst=worst_args[0],
+            bn1_worst=worst_args[1],
+            sh1_worst=worst_args[2],
+            prog2_worst=worst_args[3],
+            bn2_worst=worst_args[4],
+            sh2_worst=worst_args[5],
+            best_label=best_label,
+            worst_label=worst_label,
+            disk_bw=disk_bw,
+            mem_bw=mem_bw,
+        )
+        print(f"Figure 9: {fig9_path}")
+
+    print("\nDone.")
 
 
 if __name__ == "__main__":

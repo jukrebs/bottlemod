@@ -33,25 +33,25 @@ __all__ = [
     "PPoly", 
     "Task",
     "TaskExecution",
-    # BottleMod-SH: Enums
+    # BottleMod-CA: Enums
     "AccessType",
     "ResourceType",
-    # BottleMod-SH: Process-side
+    # BottleMod-CA: Process-side
     "LogicalAccessProfile",
-    # BottleMod-SH: Environment-side
+    # BottleMod-CA: Environment-side
     "StorageTier",
     "TierMapping",
-    # BottleMod-SH: Cache behavior models
+    # BottleMod-CA: Cache behavior models
     "CacheBehaviorModel",
     "DirectHitRateModel",
     "StackDistanceModel",
     "PhaseBasedCacheModel",
-    # BottleMod-SH: Resource derivation
+    # BottleMod-CA: Resource derivation
     "derive_tier_resources",
     "derive_all_tier_resources",
-    # BottleMod-SH: Convenience
+    # BottleMod-CA: Convenience
     "StorageHierarchyTask",
-    # BottleMod-SH: Utilities
+    # BottleMod-CA: Utilities
     "get_bottleneck_label",
     "identify_bottleneck_type",
 ]

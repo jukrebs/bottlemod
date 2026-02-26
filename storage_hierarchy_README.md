@@ -1,8 +1,8 @@
-# Storage Hierarchy Modeling in BottleMod-SH
+# Storage Hierarchy Modeling in BottleMod-CA
 
 ## Overview
 
-The BottleMod-SH extension enhances the original BottleMod framework by enabling detailed modeling of storage hierarchy effects, such as caches and tiered storage (e.g., DRAM, SSD, HDD). This allows for more accurate bottleneck analysis in data-intensive workloads where storage is a critical factor.
+The BottleMod-CA (Cache-Aware) extension enhances the original BottleMod framework by enabling detailed modeling of storage hierarchy effects, such as caches and tiered storage (e.g., DRAM, SSD, HDD). This allows for more accurate bottleneck analysis in data-intensive workloads where storage is a critical factor.
 
 ---
 
@@ -13,7 +13,6 @@ The BottleMod-SH extension enhances the original BottleMod framework by enabling
 - **Class:** `LogicalAccessProfile`
 - **Attributes:**
   - `A_read`, `A_write`: Cumulative bytes read/written as a function of progress.
-  - `Q_read`, `Q_write`: Cumulative operations (e.g., IOPS) as a function of progress.
 - **Example:**
   - Sequential read: 1GB over 100 progress units.
 
@@ -21,7 +20,7 @@ The BottleMod-SH extension enhances the original BottleMod framework by enabling
 - **Purpose:** Represent physical or logical storage layers (e.g., DRAM, NVMe SSD, HDD).
 - **Class:** `StorageTier`
 - **Attributes:**
-  - Bandwidth and IOPS functions (as `PPoly` objects, over time)
+  - Bandwidth functions (as `PPoly` objects, over time)
   - Capacity (for cache modeling)
   - Tier index (0 = fastest, higher = slower)
 - **Predefined tiers:** `memory`, `nvme_ssd`, `sata_ssd`, `hdd`

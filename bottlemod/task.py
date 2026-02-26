@@ -1,7 +1,7 @@
 import bisect
 import itertools
 import math
-from typing import Any, List, Tuple, Union, Optional
+from typing import Any, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -217,10 +217,9 @@ class TaskExecution:
                     if fallback is not None and fallback > cur + eps:
                         next = fallback
                     else:
-                        if (
-                            abs(last_segment(cur) - max_value)
-                            <= self.precision_threshold(max_value)
-                        ):
+                        if abs(
+                            last_segment(cur) - max_value
+                        ) <= self.precision_threshold(max_value):
                             break
                         raise TimeoutError(
                             "Task would never finish with the given resources."
@@ -292,10 +291,9 @@ class TaskExecution:
                         if fallback is not None and fallback > cur + eps:
                             next = fallback
                         else:
-                            if (
-                                abs(current_segment(cur) - max_value)
-                                <= self.precision_threshold(max_value)
-                            ):
+                            if abs(
+                                current_segment(cur) - max_value
+                            ) <= self.precision_threshold(max_value):
                                 break
                             raise TimeoutError(
                                 "Task would never finish with the given resources."
