@@ -1,3 +1,3 @@
-[submodule "/home/justus/Code/Uni/bottlemod_cache_aware/bottlemod_vanilla"]
-	path = /home/justus/Code/Uni/bottlemod_cache_aware/bottlemod_vanilla
+[submodule "bottlemod_vanilla"]
+	path = bottlemod_vanilla
 	url = https://github.com/bottlemod/bottlemod

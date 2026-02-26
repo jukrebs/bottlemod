@@ -21,6 +21,15 @@ We sweep the **cgroup memory limit** from 256 MB to 16 GB to control the effecti
 - **Vanilla BottleMod**: models ffmpeg as a single task with one bandwidth constraint. Predicts a constant ~18.9 s regardless of memory limit.
 - **BottleMod‑CA**: models ffmpeg as a `StorageHierarchyTask` with LogicalAccessProfile, TierMapping, and StorageTier constructs. Predicts 18.9 s (cold) down to 13.1 s (warm).
 
+### Two-video task reordering
+
+When a second video (`--video2`) is provided, the experiment also runs two sequential ffmpeg remux tasks under a shared cgroup memory limit and compares orderings (A→B vs B→A). After the first task completes, its pages occupy the page cache, reducing cache available for the second task. BottleMod‑CA models this via: `remaining_cache = max(0, mem_limit - file_size_task1)`.
+
+- **Video A**: `/mnt/sata/input.mp4` (4.3 GB)
+- **Video B**: `/mnt/sata/input_small.mp4` (1020 MB)
+
+Processing the smaller video first leaves more cache room for the larger one, reducing total workflow runtime. The vanilla model cannot predict this ordering effect since it has no concept of cache state.
+
 ### Implementation
 
 - Runner + plots: `exp1_cache_aware_ordering.py`
@@ -32,13 +41,15 @@ The runner:
 2. Sweeps cgroup memory limits.
 3. For each limit, runs ffmpeg for N trials, records runtime.
 4. Models the workload in both vanilla BottleMod and BottleMod‑CA.
-5. Writes a results JSON and generates Figure‑6 and Figure‑7 style plots.
+5. If `--video2` is given, runs two-video sequential workflows (A→B and B→A) and models the ordering effect.
+6. Writes a results JSON and generates Figure‑6, Figure‑7, and (with `--video2`) Figure‑8 and Figure‑9 style plots.
 
 ### Run environment (tu)
 
 - Host: `cpu09`, AMD EPYC 7282 16-Core, 125 Gi RAM
 - SATA disk: `/dev/sda` mounted at `/mnt/sata` (880 GB, ext4)
-- Input video: `/mnt/sata/input.mp4` (4.3 GB, H.264 1080p)
+- Input video A: `/mnt/sata/input.mp4` (4.3 GB, H.264 1080p)
+- Input video B: `/mnt/sata/input_small.mp4` (1020 MB, H.264)
 - ffmpeg 6.1.1, cgroup v2, sudo available
 - Calibration: disk_bw = 242.7 MB/s, mem_bw = 350.7 MB/s
 
@@ -63,6 +74,23 @@ The vanilla model predicts a flat ~18.9 s for all memory limits. The CA model co
 - Top row: progress (%) with bottleneck-colored bands
 - Bottom row: bandwidth usage vs time
 
+### Figure‑8 style (two-video task ordering)
+
+- x-axis: cgroup memory limit
+- y-axis: total workflow runtime (s)
+- **Orange**: A→B ordering (prediction line + measured bars)
+- **Blue**: B→A ordering (prediction line + measured bars)
+
+Shows that task ordering matters when the combined file sizes exceed available cache.
+
+### Figure‑9 style (bottleneck timeline for best vs worst ordering)
+
+2×2 panel at the memory limit where ordering difference is largest:
+
+- Left column: best ordering (task 1 + task 2 progress)
+- Right column: worst ordering (task 1 + task 2 progress)
+- Bottleneck-colored bands show disk-bound vs memory-bound segments
+
 ## How to reproduce (tu)
 
 ```bash
@@ -71,6 +99,7 @@ PY="$ROOT/.venv/bin/python"
 
 "$PY" "$ROOT/thesis_experiment/01_cach_aware_ordering/exp1_cache_aware_ordering.py" \
   --video /mnt/sata/input.mp4 \
+  --video2 /mnt/sata/input_small.mp4 \
   --out-dir "/var/tmp/exp1_ffmpeg_$(date +%Y%m%d_%H%M%S)" \
   --mem-sweep 256M,512M,1G,2G,4G,8G,16G \
   --trials 5 --drop-caches

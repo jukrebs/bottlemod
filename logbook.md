@@ -46,3 +46,19 @@
 - Summary:
 	- Replaced the local `bottlemod_vanilla` folder with a git submodule pointing to https://github.com/bottlemod/bottlemod.
 
+## 2026-02-26 12:10:00 +0100
+
+- Files changed:
+	- AGENTS.md
+	- thesis_experiment/01_cach_aware_ordering/README.md
+	- thesis_experiment/01_cach_aware_ordering/01_cache_aware_ordering.md
+	- logbook.md
+- Tests run:
+	- None (documentation-only changes)
+- Summary:
+	- Identified that the experiment server (`tu`) is out of sync with upstream (commit be3ec8f vs ef4de6c); `git fetch` fails due to GitHub SSH host key verification. Needs manual fix.
+	- Confirmed the two-video reordering experiment code already exists in `exp1_cache_aware_ordering.py` (`--video2` flag, Figures 8 & 9) but was never exercised — all 4 prior runs used single-video only.
+	- Both video files already exist on the server: `input.mp4` (4.3 GB) and `input_small.mp4` (1020 MB).
+	- Updated AGENTS.md run recipe to include `--video2 /mnt/sata/input_small.mp4`.
+	- Updated experiment README.md and 01_cache_aware_ordering.md to document the two-video task reordering experiment, Figures 8 & 9, and the eviction model.
+
