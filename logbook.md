@@ -36,3 +36,13 @@
 	- Copied the latest exp1 findings from host `tu` into the repository findings folder with matching timestamp.
 	- Updated `AGENTS.md` experiment section to make post-run findings sync mandatory for every experiment run.
 
+## 2026-02-26 00:00:00 +0100
+
+- Files changed:
+	- .gitmodules
+	- bottlemod_vanilla
+- Tests run:
+	- Not run (not requested)
+- Summary:
+	- Replaced the local `bottlemod_vanilla` folder with a git submodule pointing to https://github.com/bottlemod/bottlemod.
+
