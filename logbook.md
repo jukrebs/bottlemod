@@ -150,3 +150,73 @@
 	- Removed findings/20260226_140426/ (4.58 GB files with per-task cgroup bug — no ordering effect visible, superseded by 20260226_171444).
 	- Prepared for commit: exp1_refined.py, best findings (20260226_171444), two-video findings (20260226_124156), updated README, and logbook.
 
+## 2026-02-26 21:10:00 +0100
+
+- Files changed:
+	- thesis_experiment/01_cach_aware_ordering/README.md
+	- thesis_experiment/01_cach_aware_ordering/exp1_memory_increase_no_eviction.py (NEW)
+	- thesis_experiment/01_cach_aware_ordering/bottlemod_ca_flowchart.md (NEW)
+	- thesis_experiment/01_cach_aware_ordering/findings/20260226_181215/
+	- thesis_experiment/01_cach_aware_ordering/findings/20260226_185746/
+	- thesis_experiment/01_cach_aware_ordering/findings/20260226_200024/
+	- logbook.md
+- Tests run:
+	- `ssh tu '... ffmpeg concat ... -> /mnt/sata/input_20g_a.mp4, /mnt/sata/input_20g_b.mp4'`
+	- `ssh tu 'PYTHONPATH="$ROOT" "$PY" exp1_refined.py --video-a /mnt/sata/input_20g_a.mp4 --video-b /mnt/sata/input_20g_b.mp4 --mem-limit 30G --trials 3 --drop-caches --out-dir /var/tmp/exp1_refined_10x_20260226_181215'`
+	- `ssh tu 'PYTHONPATH="$ROOT" "$PY" exp1_memory_increase_no_eviction.py --video-a /mnt/sata/input_2g_a.mp4 --video-b /mnt/sata/input_2g_b.mp4 --mem-evict 3G --mem-no-evict 5G --trials 3 --drop-caches --out-dir /var/tmp/exp1_noevict_base_20260226_185746'`
+	- `ssh tu 'PYTHONPATH="$ROOT" "$PY" exp1_memory_increase_no_eviction.py --video-a /mnt/sata/input_20g_a.mp4 --video-b /mnt/sata/input_20g_b.mp4 --mem-evict 30G --mem-no-evict 70G --trials 2 --drop-caches --out-dir /var/tmp/exp1_noevict_10x70g_20260226_200024'`
+	- `PYTHONPATH="/home/justus/Code/Uni/bottlemod_cache_aware" .venv/bin/python -m py_compile thesis_experiment/01_cach_aware_ordering/exp1_refined.py thesis_experiment/01_cach_aware_ordering/exp1_memory_increase_no_eviction.py`
+	- `lsp_diagnostics exp1_memory_increase_no_eviction.py (severity=error)` → PASS (no errors)
+	- Result: PASS
+- Summary:
+	- Ran the refined ordering experiment at 10× scale (18.7 GB files, 30 GB memory): measured interleaved 379.72s vs grouped 339.31s (1.12× speedup); vanilla remains 1.00×.
+	- Added companion experiment `exp1_memory_increase_no_eviction.py` to demonstrate that ordering speedup collapses when memory is increased enough to avoid eviction.
+	- Ran companion experiment at base scale (3G vs 5G): eviction speedup 1.075×, no-eviction 0.969× (~no ordering benefit).
+	- Ran companion experiment at 10× scale (30G vs 70G): eviction speedup 1.150×, no-eviction 0.979× (~no ordering benefit).
+	- Synced new findings into repo under matching timestamps (20260226_181215, 20260226_185746, 20260226_200024).
+	- Added `bottlemod_ca_flowchart.md` (Mermaid) describing the BottleMod-CA modeling and measurement pipeline.
+
+## 2026-02-28 17:20:00 +0100
+
+- Files changed:
+	- thesis_experiment/01_memory_increase/exp1_memory_increase_no_eviction.py (moved from 01_cach_aware_ordering and import path fixed)
+	- thesis_experiment/01_memory_increase/README.md (NEW)
+	- thesis_experiment/01_memory_increase/findings/20260226_185746/
+	- thesis_experiment/01_memory_increase/findings/20260226_200024/
+	- thesis_experiment/01_cach_aware_ordering/README.md (removed companion-memory sections and findings rows)
+	- logbook.md
+- Tests run:
+	- `PYTHONPATH="/home/justus/Code/Uni/bottlemod_cache_aware" .venv/bin/python -m py_compile thesis_experiment/01_memory_increase/exp1_memory_increase_no_eviction.py`
+	- `PYTHONPATH="/home/justus/Code/Uni/bottlemod_cache_aware" .venv/bin/python thesis_experiment/01_memory_increase/exp1_memory_increase_no_eviction.py --help`
+	- `lsp_diagnostics thesis_experiment/01_memory_increase/exp1_memory_increase_no_eviction.py (severity=error)` → PASS (no errors)
+	- Result: PASS
+- Summary:
+	- Created a dedicated experiment directory `thesis_experiment/01_memory_increase/`.
+	- Moved `exp1_memory_increase_no_eviction.py` and its findings (`20260226_185746`, `20260226_200024`) into the new directory.
+	- Added a dedicated README for the memory-increase experiment and removed companion-memory content from `01_cach_aware_ordering/README.md`.
+	- Kept cache-aware reordering findings in `01_cach_aware_ordering/` and no-eviction validation findings in `01_memory_increase/`.
+
+## 2026-02-28 18:00:00 +0100
+
+- Files changed:
+	- AGENTS.md
+	- thesis_experiment/01_cach_aware_ordering/exp1_cache_aware_ordering.py (removed)
+	- thesis_experiment/01_cach_aware_ordering/exp1_refined.py (removed; replaced by exp1_reordering.py)
+	- thesis_experiment/01_cach_aware_ordering/exp1_reordering.py (renamed + CA runtime model switched to original TaskExecution prediction)
+	- thesis_experiment/01_cach_aware_ordering/README.md
+	- thesis_experiment/01_cach_aware_ordering/01_cache_aware_ordering.md
+	- thesis_experiment/02_memory_increase/exp2_memory_increase_no_eviction.py
+	- thesis_experiment/02_memory_increase/README.md
+	- logbook.md
+- Tests run:
+	- `PYTHONPATH="/home/justus/Code/Uni/bottlemod_cache_aware" .venv/bin/python -m py_compile thesis_experiment/01_cach_aware_ordering/exp1_reordering.py thesis_experiment/02_memory_increase/exp2_memory_increase_no_eviction.py`
+	- `PYTHONPATH="/home/justus/Code/Uni/bottlemod_cache_aware" .venv/bin/python thesis_experiment/01_cach_aware_ordering/exp1_reordering.py --help`
+	- `PYTHONPATH="/home/justus/Code/Uni/bottlemod_cache_aware" .venv/bin/python thesis_experiment/02_memory_increase/exp2_memory_increase_no_eviction.py --help`
+	- `lsp_diagnostics thesis_experiment/01_cach_aware_ordering/exp1_reordering.py (severity=error)` → PASS (no errors)
+	- `lsp_diagnostics thesis_experiment/02_memory_increase/exp2_memory_increase_no_eviction.py (severity=error)` → PASS (no errors)
+	- Result: PASS
+- Summary:
+	- Removed the legacy `exp1_cache_aware_ordering.py` and renamed `exp1_refined.py` to `exp1_reordering.py`.
+	- Updated the reordering script to use original BottleMod-CA prediction timing from `TaskExecution` (no harmonic-mean runtime override).
+	- Updated run recipes and documentation references to the new script name and current command format.
+	- Updated the companion memory-increase experiment to import from `exp1_reordering.py`.

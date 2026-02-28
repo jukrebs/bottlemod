@@ -39,8 +39,9 @@ Each ordering runs 4 `ffmpeg -i <file> -c copy <out>` remux operations (I/O-boun
 
 ### Implementation
 
-- **Refined experiment**: `exp1_refined.py` — 4-task workflow, persistent cgroup, interleaved vs grouped
-- **Original experiment**: `exp1_cache_aware_ordering.py` — single/two-video memory sweep (historical)
+- **Current experiment**: `exp1_reordering.py` — 4-task workflow, persistent cgroup, interleaved vs grouped
+- **Legacy sweep findings**: produced with now-removed `exp1_cache_aware_ordering.py`
+- **No-eviction memory-increase validation**: `../02_memory_increase/`
 - Experiment description: `01_cache_aware_ordering.md`
 
 ## Key Result
@@ -52,6 +53,16 @@ Each ordering runs 4 `ffmpeg -i <file> -c copy <out>` remux operations (I/O-boun
 | **Vanilla BottleMod** | 48.63 | 48.63 | 1.00× |
 
 **The CA model predicts a 1.11× speedup from cache-friendly ordering; the measured speedup is 1.09×.** Vanilla BottleMod predicts no difference between orderings.
+
+### 10× scale result (18.7 GB × 2 files, 30 GB memory)
+
+| Model | Interleaved (s) | Grouped (s) | Speedup |
+|-------|------------------|-------------|---------|
+| **BottleMod‑CA** | 379.69 | 359.20 | **1.06×** |
+| **Measured** | 379.72 ± 7.69 | 339.31 ± 0.87 | **1.12×** |
+| **Vanilla BottleMod** | 426.24 | 426.24 | 1.00× |
+
+The ordering effect remains visible at 10× file size. Grouped order is still clearly faster than interleaved in measured runs.
 
 ### Per-task accuracy
 
@@ -96,20 +107,25 @@ ROOT="$HOME/bm_exp/bottlemod_cache_aware"
 PY="$ROOT/.venv/bin/python"
 
 PYTHONPATH="$ROOT" "$PY" \
-  "$ROOT/thesis_experiment/01_cach_aware_ordering/exp1_refined.py" \
+  "$ROOT/thesis_experiment/01_cach_aware_ordering/exp1_reordering.py" \
   --video-a /mnt/sata/input_2g_a.mp4 \
   --video-b /mnt/sata/input_2g_b.mp4 \
   --mem-limit 3G --trials 5 --drop-caches \
-  --out-dir "/var/tmp/exp1_refined_$(date +%Y%m%d_%H%M%S)"
+  --out-dir "/var/tmp/exp1_reordering_$(date +%Y%m%d_%H%M%S)"
 ```
 
 ## Findings
 
 | Timestamp | Script | Files | Memory | Notes |
 |-----------|--------|-------|--------|-------|
-| `20260226_171444` | `exp1_refined.py` | 1.9 GB × 2 | 3 GB | **Best result** — persistent cgroup + harmonic mean model |
+| `20260226_181215` | `exp1_reordering.py` | 18.7 GB × 2 | 30G | 10× reordering run: grouped remains faster than interleaved |
+| `20260226_171444` | `exp1_reordering.py` | 1.9 GB × 2 | 3 GB | **Best result** — persistent cgroup |
 | `20260226_124156` | `exp1_cache_aware_ordering.py` | 4.3 GB + 1020 MB | sweep | Two-video memory sweep (different-sized files) |
 | `20260220_123431` | `exp1_cache_aware_ordering.py` | 4.3 GB | sweep | Single-video baseline |
+
+## Flow chart
+
+- See `bottlemod_ca_flowchart.md` for a Mermaid flow chart of the BottleMod-CA pipeline used in these experiments.
 
 ## Technical notes
 
@@ -117,7 +133,6 @@ PYTHONPATH="$ROOT" "$PY" \
 
 Each ordering's 4 tasks must run inside a **single `systemd-run --scope`** cgroup, not individual `systemd-run --wait` invocations. When a transient cgroup is destroyed between tasks, its page cache charges are released to the global pool, and the next task's fresh cgroup benefits from warm global cache regardless of ordering — defeating the experiment.
 
-### Serial-access bandwidth model
+### CA runtime modeling
 
-BottleMod models storage tiers as independent parallel resources (`time = max(cache_time, disk_time)`). For sequential file I/O, each page is served by either cache or disk (not both simultaneously). The experiment overrides predicted time with a weighted-harmonic-mean: `eff_bw = 1 / (hit/mem_bw + (1−hit)/disk_bw)`, while still using the two-tier `StorageHierarchyTask` for bottleneck visualization.
-
+`exp1_reordering.py` now uses the original BottleMod-CA `TaskExecution` runtime directly for prediction (same style as the legacy sweep script), while still using the same eviction-based hit-rate setup and two-tier storage hierarchy.

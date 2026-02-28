@@ -42,24 +42,24 @@
 	- Calibrate per run and store `disk_bw_bytes_s` / `mem_bw_bytes_s` in result JSON.
 	- Do not hardcode prior bandwidth values as universal constants.
 - Avoid concurrent heavy I/O on `tu` during measurements to reduce contention noise.
-- Write new outputs to a new timestamped folder (e.g. `/var/tmp/exp1_ffmpeg_YYYYmmdd_HHMMSS`).
+- Write new outputs to a new timestamped folder (e.g. `/var/tmp/exp1_reordering_YYYYmmdd_HHMMSS`).
 
-### Standard exp1 run recipe on tu
+### Standard exp1 reordering run recipe on tu
 - Project env:
 	- If missing, create `.venv` via `./setup_bottlemod_env.sh`.
 	- Use `.venv/bin/python` explicitly.
 - Run:
 	- `ROOT="$HOME/bm_exp/bottlemod_cache_aware"`
 	- `PY="$ROOT/.venv/bin/python"`
-	- `"$PY" "$ROOT/thesis_experiment/01_cach_aware_ordering/exp1_cache_aware_ordering.py" --video /mnt/sata/input.mp4 --video2 /mnt/sata/input_small.mp4 --out-dir "/var/tmp/exp1_ffmpeg_$(date +%Y%m%d_%H%M%S)" --mem-sweep 256M,512M,1G,2G,4G,8G,16G --trials 5 --drop-caches`
+	- `PYTHONPATH="$ROOT" "$PY" "$ROOT/thesis_experiment/01_cach_aware_ordering/exp1_reordering.py" --video-a /mnt/sata/input_2g_a.mp4 --video-b /mnt/sata/input_2g_b.mp4 --out-dir "/var/tmp/exp1_reordering_$(date +%Y%m%d_%H%M%S)" --mem-limit 3G --trials 5 --drop-caches`
 
 ### Post-run findings sync (mandatory)
-- After every experiment run on `tu`, copy the run artifacts from `/var/tmp/exp1_ffmpeg_YYYYmmdd_HHMMSS` into this repository under `thesis_experiment/01_cach_aware_ordering/findings/YYYYmmdd_HHMMSS/`.
+- After every experiment run on `tu`, copy the run artifacts from `/var/tmp/exp1_reordering_YYYYmmdd_HHMMSS` into this repository under `thesis_experiment/01_cach_aware_ordering/findings/YYYYmmdd_HHMMSS/`.
 - Keep the original timestamp in the destination folder name.
 - Recommended copy command from local host:
 	- `TS=YYYYmmdd_HHMMSS`
 	- `mkdir -p thesis_experiment/01_cach_aware_ordering/findings/$TS`
-	- `scp -r "tu:/var/tmp/exp1_ffmpeg_$TS/*" "thesis_experiment/01_cach_aware_ordering/findings/$TS/"`
+	- `scp -r "tu:/var/tmp/exp1_reordering_$TS/*" "thesis_experiment/01_cach_aware_ordering/findings/$TS/"`
 
 ### Minimal run metadata to document for every experiment
 - Hostname, CPU model, RAM size
@@ -67,4 +67,3 @@
 - cgroup memory sweep values
 - Calibrated storage rates (`disk_bw_bytes_s`, `mem_bw_bytes_s`)
 - ffmpeg version and command-line flags
-

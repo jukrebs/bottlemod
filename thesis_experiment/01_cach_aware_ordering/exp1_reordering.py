@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Experiment 1 (Refined) — Cache-Aware Task Ordering with Two Same-Size Files
+Experiment 1 — Cache-Aware Task Ordering with Two Same-Size Files
 
 Demonstrates that task ordering matters when two files A and B share a
 constrained page cache.  Four sequential ffmpeg remux operations are
@@ -25,10 +25,10 @@ Usage:
     ROOT="$HOME/bm_exp/bottlemod_cache_aware"
     PY="$ROOT/.venv/bin/python"
     PYTHONPATH="$ROOT" "$PY" \\
-        "$ROOT/thesis_experiment/01_cach_aware_ordering/exp1_refined.py" \\
+        "$ROOT/thesis_experiment/01_cach_aware_ordering/exp1_reordering.py" \\
         --video-a /mnt/sata/input.mp4 \\
         --video-b /mnt/sata/input_b.mp4 \\
-        --out-dir "/var/tmp/exp1_refined_$(date +%Y%m%d_%H%M%S)" \\
+        --out-dir "/var/tmp/exp1_reordering_$(date +%Y%m%d_%H%M%S)" \\
         --mem-limit 5G --trials 5 --drop-caches
 """
 
@@ -37,7 +37,6 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
-import math
 import platform
 import subprocess
 import sys
@@ -48,6 +47,7 @@ from typing import Any, List, Tuple
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
@@ -242,20 +242,6 @@ def predict_vanilla(file_size: float, disk_bw: float) -> float:
     return float(result.x[-1])
 
 
-def _effective_bw(disk_bw: float, mem_bw: float, hit_rate: float) -> float:
-    """Weighted-harmonic-mean bandwidth for sequential I/O with partial cache.
-
-    Each page is served by exactly one tier (cache hit → mem_bw, miss → disk_bw).
-    Time = hit*size/mem_bw + (1-hit)*size/disk_bw, so
-    effective_bw = 1 / (hit/mem_bw + (1-hit)/disk_bw).
-    """
-    if hit_rate <= 0.0:
-        return disk_bw
-    if hit_rate >= 1.0:
-        return mem_bw
-    return 1.0 / (hit_rate / mem_bw + (1.0 - hit_rate) / disk_bw)
-
-
 def _make_sh_task(
     file_size: float, disk_bw: float, mem_bw: float, hit_rate: float,
 ) -> StorageHierarchyTask:
@@ -293,21 +279,6 @@ def _make_sh_task(
 def predict_cache_aware(
     file_size: float, disk_bw: float, mem_bw: float, hit_rate: float,
 ) -> Tuple[float, Any, Any, StorageHierarchyTask]:
-    """BottleMod-CA prediction using serial-access effective bandwidth.
-
-    For sequential I/O each page is served by exactly one tier, so tiers
-    are NOT independent parallel resources. Predicted time uses the
-    weighted-harmonic-mean bandwidth:
-
-        eff_bw = 1 / (hit/mem_bw + (1-hit)/disk_bw)
-        t      = file_size / eff_bw
-
-    The StorageHierarchyTask is still built (two-tier, parallel model) to
-    produce bottleneck visualizations; only the *predicted time* is
-    overridden.
-
-    Returns ``(predicted_time, progress_func, bottleneck_list, sh_task)``.
-    """
     max_progress = 1.0
     T_max = file_size / disk_bw * 2.0
 
@@ -322,11 +293,7 @@ def predict_cache_aware(
 
     execution = TaskExecution(bm_task, all_in_cpu, in_data)
     progress, bottlenecks = execution.get_result()
-
-    eff_bw = _effective_bw(disk_bw, mem_bw, hit_rate)
-    predicted_time = file_size / eff_bw
-
-    return predicted_time, progress, bottlenecks, sh_task
+    return float(progress.x[-1]), progress, bottlenecks, sh_task
 
 
 # ===========================================================================
@@ -515,7 +482,7 @@ def _bottleneck_category(bn_index: int, sh_task: StorageHierarchyTask) -> str:
 
 
 def _plot_progress_panel(
-    ax: plt.Axes,
+    ax: Axes,
     progress: Any,
     bottlenecks: list[int],
     sh_task: StorageHierarchyTask,
@@ -540,8 +507,24 @@ def _plot_progress_panel(
     ax.set_title(title, fontsize=9)
 
 
+def _to_float(value: object) -> float:
+    if isinstance(value, (int, float, np.floating)):
+        return float(value)
+    if isinstance(value, np.ndarray):
+        if value.size == 0:
+            return 0.0
+        return float(value.reshape(-1)[0])
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return _to_float(item())
+        except Exception:
+            pass
+    return 0.0
+
+
 def _plot_resource_panel(
-    ax: plt.Axes,
+    ax: Axes,
     progress: Any,
     sh_task: StorageHierarchyTask,
     disk_bw: float,
@@ -563,11 +546,11 @@ def _plot_resource_panel(
         dp = max(float(dprog(xv)), 0.0)
         prog_val = float(progress(xv))
         try:
-            pc_r = float(pc_req_rate(prog_val))
+            pc_r = _to_float(pc_req_rate(prog_val))
         except Exception:
             pc_r = 0.0
         try:
-            dk_r = float(disk_req_rate(prog_val))
+            dk_r = _to_float(disk_req_rate(prog_val))
         except Exception:
             dk_r = 0.0
         pc_consumed.append(dp * pc_r / 1e6)
@@ -856,7 +839,7 @@ def _plot_per_task_breakdown(
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Experiment 1 (Refined): Cache-aware task ordering with two same-size files"
+        description="Experiment 1: Cache-aware task ordering with two same-size files"
     )
     ap.add_argument("--video-a", required=True, help="Path to video file A")
     ap.add_argument("--video-b", required=True, help="Path to video file B (same size as A)")
@@ -1073,7 +1056,7 @@ def main() -> None:
         },
     }
 
-    out_json = out_dir / "exp1_refined_results.json"
+    out_json = out_dir / "exp1_reordering_results.json"
     out_json.write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"\nResults written to: {out_json}")
 
