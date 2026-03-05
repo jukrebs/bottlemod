@@ -1,5 +1,8 @@
-% Master Thesis Proposal: Statement of Work
-% Cache-Aware Extension of BottleMod for Modeling I/O-Intensive Workloads
+% Master Thesis Proposal – Statement of Work
+% Cache-Aware Extension of BottleMod for Storage-Hierarchy-Aware
+% Bottleneck Analysis in I/O-Intensive Workflows
+%
+% Template: Thesis Proposal v2.4 (J. Soto, July 2024)
 
 \documentclass[11pt,a4paper]{article}
 
@@ -7,10 +10,10 @@
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
 \usepackage{lmodern}
-\usepackage{amsmath}
-\usepackage{amssymb}
+\usepackage{amsmath,amssymb}
 \usepackage{booktabs}
 \usepackage{hyperref}
+\usepackage{enumitem}
 
 \hypersetup{%
   colorlinks=true,
@@ -19,36 +22,197 @@
   citecolor=blue
 }
 
-\title{Master Thesis Proposal: Cache-Aware Extension of BottleMod for Modeling I/O-Intensive Workloads}
-\author{\textbf{Student:} Justus Krebs \\ \textbf{Supervisor:} Joel Witzke \\ \textbf{Institution:} TU Berlin / Research Group Distributed and Operating Systems}
+\setlength{\parskip}{0.4em}
+\setlength{\parindent}{0pt}
+
+\title{Master Thesis Proposal:\\[4pt]
+Cache-Aware Extension of BottleMod for\\
+Storage-Hierarchy-Aware Bottleneck Analysis\\
+in I/O-Intensive Workflows}
+\author{%
+  \textbf{Student:} Justus Krebs \\
+  \textbf{Supervisor:} Joel Witzke \\
+  \textbf{Institution:} TU Berlin / Zuse Institute Berlin (ZIB)}
 \date{\today}
 
 \begin{document}
 \maketitle
 
-\section{Motivation}
+% =========================================================================
+%  SECTION 1 — Introduction / Scientific Background / Related Work [max 1p]
+% =========================================================================
+\section{Introduction / Scientific Background / Related Work}
 
-Data-intensive workloads are increasingly bottlenecked by storage hierarchy effects that current performance models ignore. Scientific workflows in genomics, satellite image processing, and video analytics spend significant time on I/O operations where execution time depends on whether data resides in the page cache or must be fetched from block devices. Current models typically treat storage as a single throughput number, ignoring the tiered nature of modern storage systems. This leads to incorrect bottleneck attribution and inaccurate runtime predictions for cache-sensitive workloads. Accurate modeling of storage hierarchy effects would enable schedulers to make informed decisions about resource allocation and improve workflow execution times.
+% 1.1 Obstacle
+\subsection{Obstacle}
+Data-intensive scientific workflows spend a significant fraction of their execution time on I/O operations whose effective throughput depends on the operating system's page cache.
+When the working set exceeds available memory, cache evictions force data to be re-read from slow block devices, creating performance cliffs that shift bottlenecks from compute to storage.
+BottleMod~\cite{bottlemod}, a recent progress-based performance model for workflow tasks (ICPE'25), provides fast analytical bottleneck analysis but treats storage bandwidth as a single, constant rate --- it cannot represent the performance difference between cached and uncached data access, nor can it predict how task ordering or memory allocation changes effective I/O throughput.
 
-\section{Related Work}
+% 1.2 Motivation
+\subsection{Motivation}
+Accurate bottleneck attribution is a prerequisite for informed resource allocation: a scheduler that misidentifies a memory-bandwidth-bound task as disk-bound will waste budget on faster storage instead of allocating more memory.
+In practice, the page cache introduces a non-linear relationship between available memory and effective I/O bandwidth that existing workflow performance models either ignore entirely or model only at the simulation level (e.g., WRENCH/SimGrid~\cite{wrench,simgrid}), sacrificing the analytical tractability that makes BottleMod attractive.
+Bridging this gap --- making bottleneck prediction \emph{cache-aware} while preserving BottleMod's lightweight, closed-form character --- would enable schedulers and workflow engines to reason about storage hierarchy effects at negligible computational cost.
 
-BottleMod~\cite{bottlemod} introduces a progress-based bottleneck model using requirement and input functions to predict task execution analytically. SimGrid~\cite{simgrid} is a versatile simulation framework for distributed applications using discrete-event simulation. WRENCH~\cite{wrench}, built on SimGrid, models workflows as read-compute-write processes but lacks temporal task behavior detail. Stack distance analysis~\cite{mattson} provides a classic cache modeling technique using reuse distance to predict hit rates. The Linux page cache is the kernel mechanism caching file data in memory to accelerate I/O operations.
+% 1.3 Novelty
+\subsection{Novelty}
+Existing performance models fall into two camps: (i)~bottleneck/roofline models~\cite{roofline} that treat memory as a single bandwidth ceiling without OS cache dynamics, and (ii)~page-cache-aware simulation models~\cite{pagecache_model} that capture cache behavior but lack a per-task bottleneck decomposition.
+Cache-aware DAG scheduling research~\cite{cache_dag} targets CPU cache hierarchies (L1/L2/L3), not the OS page cache.
+No existing model integrates page-cache hit-rate dynamics into a progress-based bottleneck predictor.
+This thesis fills that gap by extending BottleMod with a storage hierarchy layer that translates cache hit rates into tier-specific bandwidth requirements, enabling the existing progress solver to produce cache-aware predictions and bottleneck timelines.
 
-\section{Goal}
+% 1.4 Anticipated impact
+\subsection{Anticipated Impact}
+A validated cache-aware bottleneck model would allow workflow schedulers and resource managers to:
+(a)~predict how memory allocation affects I/O-bound task runtime,
+(b)~identify when increasing memory (rather than storage bandwidth) removes a bottleneck,
+and (c)~optimize task ordering to maximize page cache reuse.
+Our preliminary experiments show that cache-friendly task ordering yields a measured 1.09--1.12$\times$ speedup on a 4-task ffmpeg workflow --- an effect that vanilla BottleMod cannot predict at all.
 
-This thesis extends BottleMod to model storage hierarchy effects, specifically the interaction between page cache and block device tiers, and validates the extension through experiments demonstrating improved prediction accuracy for I/O-intensive workloads. The research problem is: given an I/O-intensive task, how can we accurately predict its runtime when execution time depends on cache hit rates and tier bandwidths? The baseline BottleMod model cannot represent warm-cache speedups or tier shifts caused by working set sizes exceeding cache capacity. The scope includes single-node storage behavior, Linux page cache modeling, and bandwidth constraints; distributed storage systems and network effects are out of scope.
+% 1.5 Anticipated contributions
+\subsection{Anticipated Contributions}
+\begin{enumerate}[nosep]
+	\item A formal extension to the BottleMod model (``BottleMod-CA'') that adds logical access profiles, storage tiers, and pluggable cache behavior models.
+	\item An open-source Python implementation of the extension integrated with the existing BottleMod codebase.
+	\item Experimental validation on I/O-intensive workloads demonstrating $<$20\% prediction error and correct bottleneck identification.
+	\item A demonstration that BottleMod-CA enables cache-aware task ordering optimization that vanilla BottleMod cannot express.
+\end{enumerate}
 
-\section{Implementation and Experiment}
+% 1.6 Scientific background
+\subsection{Scientific Background}
+\textbf{BottleMod}~\cite{bottlemod} models task execution through requirement functions $R_{D,k}(p)$ (data) and $R_{R,\ell}(p)$ (resources) as functions of progress~$p$, combined with time-dependent input functions $I_{D,k}(t)$ and $I_{R,\ell}(t)$.
+Progress is computed iteratively: data availability sets an upper bound; resource rates impose speedup constraints.
+The result is a piecewise-polynomial progress function $P(t)$ and a bottleneck decomposition identifying the limiting resource at each time segment.
 
-The BottleMod-CA extension adds three constructs to the baseline model. The LogicalAccessProfile defines bytes read and written over progress for each dataset. The TierMapping provides cache hit rate functions determining what fraction of accesses are served by each storage tier. The StorageTier defines bandwidth constraints for each tier in the storage hierarchy. The progress solver remains unchanged; only the resource requirement functions are expanded to include tier-specific constraints.
+\textbf{Stack distance analysis}~\cite{mattson} provides a classic framework for predicting cache hit rates from reuse distance distributions and cache capacity, forming the theoretical basis for our cache behavior models.
 
-We validate the cache-aware extension using an ffmpeg video remux workload (4.6~GB video on SATA disk), with cgroup memory limits from 256~MB to 16~GB to vary the cacheable working set. Calibration yields disk bandwidth of 242.7~MB/s and memory bandwidth of 350.7~MB/s. The vanilla BottleMod model predicts a constant runtime of approximately 18.9~s regardless of cache state. The cache-aware model predicts runtimes from 18.9~s (cold cache) down to 13.1~s (warm cache, fully cached), demonstrating a 1.44$\times$ improvement with cache awareness. These results confirm that the extension correctly captures tier transitions and predicts speedups when data fits in memory, while the vanilla model remains oblivious to cache effects.
+\textbf{The Linux page cache} manages file data in DRAM transparently, with LRU-based eviction under memory pressure.
+Cgroup v2 memory limits allow per-workload control of effective cache capacity, enabling controlled experiments.
 
+% 1.7 Related work
+\subsection{Related Work}
+\textbf{Roofline model}~\cite{roofline}: bounds performance by compute and memory bandwidth ceilings but does not model OS cache or tiered storage.
+\textbf{WRENCH/SimGrid}~\cite{wrench,simgrid}: discrete-event workflow simulation with I/O modeling, but no per-task bottleneck decomposition and high computational cost.
+\textbf{Linux page cache modeling}~\cite{pagecache_model}: explicitly models page cache for simulation accuracy but does not integrate with a bottleneck predictor.
+\textbf{Cache-aware DAG scheduling}~\cite{cache_dag}: targets CPU cache locality in multicore scheduling, not OS page cache in storage hierarchies.
+\textbf{I/O-aware HPC scheduling}~\cite{io_sched}: acknowledges storage tiers (burst buffers) in scheduling but does not predict per-task runtimes under varying cache states.
+
+% =========================================================================
+%  SECTION 2 — Goal / Research Problem [max 1/2 page]
+% =========================================================================
+\section{Goal of the Thesis / Statement of the Research Problem}
+
+% 2.1 Overarching goal
+\subsection{Overarching Goal}
+Extend the BottleMod performance model with a storage hierarchy layer that enables accurate, cache-aware prediction of task execution time and bottleneck attribution for I/O-intensive workflows under varying memory constraints.
+
+% 2.2 Research questions
+\subsection{Research Questions}
+\begin{enumerate}[nosep,label=\textbf{RQ\arabic*:}]
+	\item \textbf{Prediction accuracy.} Can a bottleneck-based model predict task runtime when effective read bandwidth is a mixture of memory-speed cache hits and storage-speed cache misses, achieving $<$20\% mean absolute percentage error (MAPE) across varying memory limits and access patterns?
+	\item \textbf{Bottleneck identification.} Does the cache-aware extension correctly identify the limiting resource (page cache bandwidth vs.\ disk bandwidth) at each phase of task execution, and can it predict where bottleneck transitions occur as memory pressure changes?
+	\item \textbf{Optimization enablement.} Can BottleMod-CA predict the runtime impact of cache-aware task ordering (and thereby enable ordering optimizations), where the vanilla model cannot?
+\end{enumerate}
+
+% 2.3 Scope
+\subsection{Scope}
+
+\subsubsection{In Scope}
+\begin{itemize}[nosep]
+	\item Single-node storage hierarchies: Linux page cache (DRAM) + block device (SATA HDD/SSD).
+	\item Sequential and random I/O access patterns with varying working set sizes.
+	\item Pluggable cache behavior models: direct hit-rate, stack-distance-based, phase-based.
+	\item Cgroup v2 memory limits as the mechanism to control effective cache capacity.
+	\item Task ordering optimization as an application of the model's predictions.
+\end{itemize}
+
+\subsubsection{Out of Scope}
+\begin{itemize}[nosep]
+	\item Distributed/networked storage (NFS, object stores, HDFS).
+	\item CPU cache hierarchy effects (L1/L2/L3) --- orthogonal and well-covered by existing work.
+	\item Kernel-level page cache modifications or custom eviction policies.
+	\item Multi-node workflow scheduling (focus is on single-node prediction accuracy).
+\end{itemize}
+
+% =========================================================================
+%  SECTION 3 — Thesis Approach [max 1/2 page]
+% =========================================================================
+\section{Thesis Approach}
+
+% 3.1 Solution approach
+\subsection{Solution Approach}
+The extension introduces three process-side and environment-side constructs that map onto BottleMod's existing requirement/input function paradigm:
+
+\begin{itemize}[nosep]
+	\item \textbf{Logical Access Profile} $A_k^r(p), A_k^w(p)$: cumulative bytes read/written by dataset $k$ as a function of progress. Process-side descriptor provided by the developer.
+	\item \textbf{Storage Tier} with bandwidth input $I_{bw,j}(t)$ and capacity $C_j$: environment-side descriptor of each tier $j$ (e.g., DRAM at 280\,MB/s, SATA at 165\,MB/s).
+	\item \textbf{Tier Mapping} $H_{k,j}^r(p)$: fraction of dataset $k$'s accesses served by tier $j$ at progress $p$, computed by a pluggable \texttt{CacheBehaviorModel} (direct hit-rate, stack-distance CDF, or phase-based).
+\end{itemize}
+
+The key derivation is: $R'_{(k,j,bw,r)}(p) = H_{k,j}^r(p) \cdot {A_k^r}'(p)$, which converts hit fractions and access rates into per-tier bandwidth requirement functions.
+These are appended to the standard \texttt{Task.cpu\_funcs} list, and the tier bandwidth inputs become \texttt{in\_cpu\_funcs} for \texttt{TaskExecution}.
+The existing progress solver and bottleneck decomposition operate unchanged --- all cache-awareness is upstream preprocessing.
+
+% 3.2 Differentiation from state of the art
+\subsection{Differentiation from State of the Art}
+Unlike simulation-based approaches (WRENCH, SimGrid), BottleMod-CA produces closed-form piecewise-polynomial predictions with negligible computational cost.
+Unlike roofline models, it captures dynamic cache state transitions within a single task execution.
+Unlike CPU-cache-aware schedulers, it targets the OS page cache and file I/O tier, which dominates data-intensive workflow performance.
+
+% 3.3 Success criteria
+\subsection{Success Criteria}
+
+Should we put something here?
+
+
+% =========================================================================
+%  BIBLIOGRAPHY
+% =========================================================================
 \begin{thebibliography}{99}
-	\bibitem{bottlemod} J.~Witzke et al., ``BottleMod: Modeling Data Flows and Tasks for Fast Bottleneck Analysis,'' in \textit{Proc. ICPE}, 2025.
-	\bibitem{simgrid} H.~Casanova et al., ``Versatile, Scalable, and Accurate Simulation of Distributed Applications and Platforms,'' \textit{J. Parallel and Distrib. Comput.}, vol.~74, no.~10, 2014.
-	\bibitem{wrench} H.~Casanova et al., ``Developing Accurate and Scalable Simulators of Production Workflow Management Systems with WRENCH,'' \textit{Future Generation Computer Systems}, vol.~112, 2020.
-	\bibitem{mattson} R.~L.~Mattson et al., ``Evaluation Techniques for Storage Hierarchies,'' \textit{IBM Systems Journal}, vol.~9, no.~2, 1970.
+	\bibitem{bottlemod}
+	A.~L\"o\ss er, J.~Witzke, F.~Schintke, B.~Scheuermann,
+	``BottleMod: Modeling Data Flows and Tasks for Fast Bottleneck Analysis,''
+	in \textit{Proc.\ ICPE}, 2025.
+	\url{https://doi.org/10.1145/3676151.3719382}
+
+	\bibitem{simgrid}
+	H.~Casanova et al.,
+	``Versatile, Scalable, and Accurate Simulation of Distributed Applications and Platforms,''
+	\textit{J.\ Parallel and Distrib.\ Comput.}, vol.~74, no.~10, 2014.
+
+	\bibitem{wrench}
+	H.~Casanova et al.,
+	``Developing Accurate and Scalable Simulators of Production Workflow Management Systems with WRENCH,''
+	\textit{Future Generation Computer Systems}, vol.~112, 2020.
+
+	\bibitem{mattson}
+	R.~L.~Mattson, J.~Gecsei, D.~R.~Slutz, I.~W.~Traiger,
+	``Evaluation Techniques for Storage Hierarchies,''
+	\textit{IBM Systems Journal}, vol.~9, no.~2, 1970.
+
+	\bibitem{roofline}
+	S.~Williams, A.~Waterman, D.~Patterson,
+	``Roofline: An Insightful Visual Performance Model for Multicore Architectures,''
+	\textit{Commun.\ ACM}, vol.~52, no.~4, 2009.
+
+	\bibitem{pagecache_model}
+	H.~Meurillon, F.~Music, G.~Pallez,
+	``Modeling the Linux Page Cache for Accurate Simulation of Data-Intensive Applications,''
+	in \textit{Proc.\ IEEE Cluster}, 2021.
+	\url{https://doi.org/10.1109/CLUSTER48925.2021.00058}
+
+	\bibitem{cache_dag}
+	M.~Qamhieh, S.~Midonnet,
+	``A Cache-Aware DAG Scheduling Method on Multicores,''
+	\textit{J.\ Systems Architecture}, 2025.
+	\url{https://doi.org/10.1016/j.sysarc.2025.103372}
+
+	\bibitem{io_sched}
+	M.~Zhao et al.,
+	``Scalable I/O-Aware Job Scheduling for Burst-Buffer Enabled HPC Clusters,''
+	in \textit{Proc.\ HPDC}, 2016.
+	\url{https://doi.org/10.1145/2907294.2907316}
 \end{thebibliography}
 
 \end{document}

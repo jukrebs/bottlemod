@@ -1,0 +1,6 @@
+# Runtime dependencies for BottleMod cache-aware extension
+# NOTE: scipy is built from source with a custom _ppoly.pyx patch
+#       by setup_bottlemod_env.sh — do NOT install scipy from PyPI.
+matplotlib>=3.8
+seaborn>=0.13
+pandas>=2.0

@@ -107,4 +107,24 @@ pip install -r requirements.txt
 # Cleanup temporary directory
 rm -rf "$TEMP_DIR"
 
-echo "Setup complete! Activate the environment with: source $ENV_PATH/bin/activate"
+# Verify the custom scipy build
+echo "Verifying custom SciPy installation..."
+"$ENV_PATH/bin/python" -c "
+import scipy, numpy
+from scipy.interpolate import PPoly
+p = PPoly([[1]], [0, 1])
+assert scipy.__version__ == '1.15.1', f'Expected scipy 1.15.1, got {scipy.__version__}'
+assert hasattr(p, 'solve') and callable(p.solve), 'Custom PPoly.solve not found — patch not applied'
+print(f'  scipy {scipy.__version__} (custom-patched) OK')
+print(f'  numpy {numpy.__version__} OK')
+print('  PPoly.solve: available')
+" || { echo "ERROR: Custom SciPy verification failed!"; exit 1; }
+
+echo ""
+echo "========================================"
+echo "Setup complete!"
+echo "========================================"
+echo "Activate: source $ENV_PATH/bin/activate"
+echo ""
+echo "WARNING: Do NOT upgrade scipy via pip — the custom _ppoly.pyx"
+echo "patch is required. Re-run this script if you need to rebuild."

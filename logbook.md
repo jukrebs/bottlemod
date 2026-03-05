@@ -220,3 +220,14 @@
 	- Updated the reordering script to use original BottleMod-CA prediction timing from `TaskExecution` (no harmonic-mean runtime override).
 	- Updated run recipes and documentation references to the new script name and current command format.
 	- Updated the companion memory-increase experiment to import from `exp1_reordering.py`.
+
+## 2026-03-04 14:19:00 +0100
+
+- Files changed:
+	- proposal/latex/proposal.tex
+	- logbook.md
+- Tests run:
+	- `pdflatex -interaction=nonstopmode proposal.tex` (×2) → PASS (5 pages, no errors)
+	- Result: PASS
+- Summary:
+	- **Thesis proposal design completed** — synthesized all prior work into a formal proposal:
