@@ -58,6 +58,7 @@ from bottlemod.func import Func
 # ---------------------------------------------------------------------------
 from bottlemod.ppoly import PPoly
 from bottlemod.storage_hierarchy import (
+    LRUEvictionModel,
     LogicalAccessProfile,
     StorageHierarchyTask,
     StorageTier,
@@ -304,50 +305,27 @@ def predict_cache_aware(
 def compute_hit_rates_interleaved(
     file_size_a: float, file_size_b: float, mem_limit: int,
 ) -> list[float]:
-    """Hit rates for interleaved ordering: Op1(A), Op1(B), Op2(A), Op2(B).
-
-    After each task, the *previous* task's file occupies the cache.
-    """
-    # Task 0: Op1(A) — cold start after drop_caches
-    hit0 = 0.0
-
-    # Task 1: Op1(B) — cache holds A's pages; B is a different file
-    remaining_1 = max(0, mem_limit - file_size_a)
-    hit1 = min(1.0, remaining_1 / file_size_b)
-
-    # Task 2: Op2(A) — cache holds B's pages; A must be re-read
-    remaining_2 = max(0, mem_limit - file_size_b)
-    hit2 = min(1.0, remaining_2 / file_size_a)
-
-    # Task 3: Op2(B) — cache holds A's pages; B must be re-read
-    remaining_3 = max(0, mem_limit - file_size_a)
-    hit3 = min(1.0, remaining_3 / file_size_b)
-
-    return [hit0, hit1, hit2, hit3]
+    """Hit rates for interleaved ordering: Op1(A), Op1(B), Op2(A), Op2(B)."""
+    model = LRUEvictionModel(cache_capacity_bytes=float(mem_limit))
+    return model.compute_hit_rates([
+        ("A", file_size_a),
+        ("B", file_size_b),
+        ("A", file_size_a),
+        ("B", file_size_b),
+    ])
 
 
 def compute_hit_rates_grouped(
     file_size_a: float, file_size_b: float, mem_limit: int,
 ) -> list[float]:
-    """Hit rates for grouped ordering: Op1(A), Op2(A), Op1(B), Op2(B).
-
-    Op2 on same file benefits from Op1's cached pages.
-    """
-    # Task 0: Op1(A) — cold start after drop_caches
-    hit0 = 0.0
-
-    # Task 1: Op2(A) — cache still holds A's pages from Op1(A)!
-    # If file_size_a <= mem_limit, entire file is cached -> hit_rate = 1.0
-    hit1 = min(1.0, mem_limit / file_size_a) if file_size_a > 0 else 0.0
-
-    # Task 2: Op1(B) — cache holds A's pages; B is a different file
-    remaining_2 = max(0, mem_limit - file_size_a)
-    hit2 = min(1.0, remaining_2 / file_size_b)
-
-    # Task 3: Op2(B) — cache now holds B's pages (A was evicted by B's read)
-    hit3 = min(1.0, mem_limit / file_size_b) if file_size_b > 0 else 0.0
-
-    return [hit0, hit1, hit2, hit3]
+    """Hit rates for grouped ordering: Op1(A), Op2(A), Op1(B), Op2(B)."""
+    model = LRUEvictionModel(cache_capacity_bytes=float(mem_limit))
+    return model.compute_hit_rates([
+        ("A", file_size_a),
+        ("A", file_size_a),
+        ("B", file_size_b),
+        ("B", file_size_b),
+    ])
 
 
 # ===========================================================================
