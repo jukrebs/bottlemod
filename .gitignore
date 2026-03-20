@@ -225,3 +225,6 @@ experiment_ground_truth.json
 proposal/latex/*
 !proposal/latex/proposal.tex
 !proposal/latex/proposal.pdf
+
+# Wrench
+sandbox
