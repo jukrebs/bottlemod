@@ -49,8 +49,7 @@ Can BottleMod-CA predict the runtime impact of cache-aware task ordering (and th
 - 4.3 Environment-side descriptors: StorageTier (bandwidth, capacity) — predefined tiers (memory, NVMe, SATA, HDD)
 - 4.4 Cache behavior models (pluggable):
   - 4.4.1 DirectHitRateModel: user-provided h(p)
-  - 4.4.2 StackDistanceModel: reuse-distance CDF → inclusive hierarchy mapping
-  - 4.4.3 PhaseBasedCacheModel: piecewise cold→warm transitions
+  - 4.4.2 LRUEvictionModel: multi-task sequential cache eviction based on file sizes vs. available page-cache capacity
 - 4.5 Tier mapping H_{k,j}(p): hit-rate fractions, sum-to-one constraint
 - 4.6 Resource derivation: R'(p) = H(p) · A'(p) — from hit fractions to BottleMod resource requirements
 - 4.7 Integration: StorageHierarchyTask → Task → TaskExecution (unchanged solver)
@@ -159,7 +158,7 @@ Can BottleMod-CA predict the runtime impact of cache-aware task ordering (and th
 1. **Memory sweep with refined experiment** (NICE TO HAVE): Run the persistent-cgroup experiment across multiple memory limits (not just one fixed point) to produce a proper runtime-vs-memory curve with the fixed methodology. The legacy sweep used the buggy per-task cgroup approach.
 
 ### What would be bonus (only if time permits):
-1. **Random I/O workload**: fio random read benchmark to test the model with non-sequential access patterns. Would exercise StackDistanceModel with non-trivial reuse distances.
+1. **Random I/O workload**: fio random read benchmark to test the model with non-sequential access patterns. Would motivate adding a simpler dedicated random-access cache model.
 2. **Multi-tier storage**: NVMe + SATA + HDD experiment to test 3-tier hierarchy. Requires hardware we may not have.
 3. **Different workload types**: Database query, image processing pipeline, etc.
 
