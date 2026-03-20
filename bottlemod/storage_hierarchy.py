@@ -16,7 +16,6 @@ After the mapping step, we derive standard BottleMod resource requirement functi
 per tier, enabling reuse of the existing progress calculation algorithm.
 
 References:
-- Mattson et al. 1970: Stack distance / reuse distance theory
 - BottleMod (ICPE'25): Modeling Data Flows and Tasks for Fast Bottleneck Analysis
 """
 
@@ -24,7 +23,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple, cast, override
+
+import numpy
 
 from bottlemod.func import Func
 from bottlemod.ppoly import PPoly
@@ -328,12 +329,14 @@ class TierMapping:
         ]
 
         for p in test_points:
-            total_read = sum(cast(float, h(p)) for h in self.H_read.values())
+            total_read = sum(float(numpy.asarray(h(p)).item()) for h in self.H_read.values())
             if abs(total_read - 1.0) > 1e-6:
                 raise ValueError(f"H_read does not sum to 1 at p={p}: sum={total_read}")
 
             if self.H_write:
-                total_write = sum(cast(float, h(p)) for h in self.H_write.values())
+                total_write = sum(
+                    float(numpy.asarray(h(p)).item()) for h in self.H_write.values()
+                )
                 if abs(total_write - 1.0) > 1e-6:
                     raise ValueError(
                         f"H_write does not sum to 1 at p={p}: sum={total_write}"
@@ -507,199 +510,204 @@ class DirectHitRateModel(CacheBehaviorModel):
         )
 
 
-class StackDistanceModel(CacheBehaviorModel):
-    """
-    Option B (recommended): Stack-distance / reuse-distance model.
-
-    Process provides a stack-distance CDF F_k(p, s):
-        Probability that an access at progress p has reuse distance <= s bytes
-
-    Environment provides cache capacity C_j, and computes:
-        hit_{k,j}(p) = F_k(p, C_j)
-
-    For an inclusive hierarchy, converts hits to tier fractions:
-        H^r_{k,0}(p) = hit_{k,0}(p)
-        H^r_{k,1}(p) = (1 - hit_{k,0}(p)) * hit_{k,1}(p)
-        ...
-        H^r_{k,J}(p) = product_{u=0}^{J-1} (1 - hit_{k,u}(p))
-
-    References:
-        - Mattson et al. 1970: "Evaluation techniques for storage hierarchies"
-        - Ding & Zhong 2001: "Reuse Distance Analysis"
-    """
+class WSSModel(CacheBehaviorModel):
+    wss_func: Callable[[float], float]
+    num_samples: int
+    eps: float
 
     def __init__(
         self,
-        stack_distance_cdf: Callable[[float, float], float],
-        working_set_size: Optional[float] = None,
+        wss_func: Callable[[float], float],
+        *,
+        num_samples: int = 100,
+        eps: float = 1e-12,
     ):
-        """
-        Args:
-            stack_distance_cdf: Function (p, s) -> probability of reuse distance <= s
-            working_set_size: Total working set size in bytes (for normalization)
-        """
-        self.stack_distance_cdf = stack_distance_cdf
-        self.working_set_size = working_set_size
+        self.wss_func = wss_func
+        self.num_samples = num_samples
+        self.eps = eps
 
+    def _cumulative_hit_rate(self, wss_bytes: float, capacity_bytes: float) -> float:
+        if capacity_bytes <= 0:
+            return 0.0
+        if wss_bytes <= self.eps:
+            return 1.0
+        return min(1.0, capacity_bytes / wss_bytes)
+
+    @override
     def compute_tier_mapping(
         self,
         access_profile: LogicalAccessProfile,
-        tiers: List[StorageTier],
-        progress_range: Tuple[float, float],
+        tiers: list[StorageTier],
+        progress_range: tuple[float, float],
     ) -> TierMapping:
-        """Compute tier mapping using stack distance CDF and tier capacities."""
         p_start, p_end = progress_range
-
-        # Sort tiers by index (fastest first)
         sorted_tiers = sorted(tiers, key=lambda t: t.tier_index)
 
-        # Sample progress points
-        num_samples = 100
-        step = (p_end - p_start) / num_samples
-        x_points = [p_start + i * step for i in range(num_samples + 1)]
+        step = (p_end - p_start) / self.num_samples
+        x_points = [p_start + i * step for i in range(self.num_samples + 1)]
 
-        # Compute hit rates at each tier for each progress point
-        # H[tier_idx][sample_idx] = fraction of accesses served from tier
-        H_fractions: Dict[int, List[float]] = {t.tier_index: [] for t in sorted_tiers}
+        h_fractions: dict[int, list[float]] = {t.tier_index: [] for t in sorted_tiers}
 
-        for p in x_points[:-1]:  # Don't include last point (used as boundary)
-            remaining = 1.0  # Fraction not yet served by faster tiers
+        for p in x_points[:-1]:
+            wss = max(0.0, self.wss_func(p))
+            remaining = 1.0
+            prev_cum_hit = 0.0
 
             for tier in sorted_tiers:
                 if tier.capacity is None:
-                    # No capacity = no caching at this tier, skip
-                    H_fractions[tier.tier_index].append(0.0)
+                    h_fractions[tier.tier_index].append(0.0)
                     continue
 
-                # Hit rate at this tier given remaining misses from faster tiers
-                hit_rate = self.stack_distance_cdf(p, tier.capacity)
-                fraction_served = remaining * hit_rate
-                H_fractions[tier.tier_index].append(fraction_served)
-                remaining *= 1.0 - hit_rate
+                cum_hit = self._cumulative_hit_rate(wss, tier.capacity)
+                cum_hit = max(prev_cum_hit, cum_hit)
+                served = max(0.0, min(remaining, cum_hit - prev_cum_hit))
 
-            # Last tier gets all remaining (backing store)
+                h_fractions[tier.tier_index].append(served)
+                remaining -= served
+                prev_cum_hit = cum_hit
+
             if sorted_tiers:
-                last_tier = sorted_tiers[-1]
-                # Adjust last tier to include remaining
-                H_fractions[last_tier.tier_index][-1] += remaining
+                h_fractions[sorted_tiers[-1].tier_index][-1] += remaining
 
-        H_read: Dict[int, PPoly] = {}
-        for tier_idx, fractions in H_fractions.items():
+        h_read: dict[int, PPoly] = {}
+        for tier_idx, fractions in h_fractions.items():
             if any(f > 0 for f in fractions):
-                H_read[tier_idx] = PPoly(x_points, [fractions])
+                h_read[tier_idx] = PPoly(x_points, [fractions])
 
         return TierMapping(
             dataset_name=access_profile.name,
-            H_read=H_read,
-            H_write=H_read.copy(),  # Same for writes by default
+            H_read=h_read,
+            H_write=h_read.copy(),
         )
 
     @classmethod
-    def uniform_reuse(cls, working_set_size: float) -> StackDistanceModel:
-        """
-        Create a model for uniform random access over a working set.
+    def constant(
+        cls,
+        wss_bytes: float,
+        *,
+        num_samples: int = 100,
+        eps: float = 1e-12,
+    ) -> "WSSModel":
+        return cls(lambda p: wss_bytes, num_samples=num_samples, eps=eps)
 
-        With uniform access to W bytes, the probability of reuse distance <= s
-        is approximately min(1, s/W) for LRU caches.
+    @classmethod
+    def piecewise(
+        cls,
+        phases: list[tuple[float, float, float]],
+        *,
+        num_samples: int = 100,
+        eps: float = 1e-12,
+    ) -> "WSSModel":
+        def wss(p: float) -> float:
+            for start, end, size in phases:
+                if start <= p < end:
+                    return size
+            return phases[-1][2]
+
+        return cls(wss, num_samples=num_samples, eps=eps)
+
+
+# =============================================================================
+# LRU Eviction Model: Multi-Task Cache Eviction for Sequential Workflows
+# =============================================================================
+
+
+@dataclass
+class LRUEvictionModel:
+    """
+    LRU page-cache eviction model for sequential task chains.
+
+    Models how a fixed-capacity page cache is shared across a sequence of
+    tasks that each access a known file.  After task N reads file X, the
+    cache holds min(capacity, file_size_X) bytes of X's pages.  The next
+    task's hit rate on file Y depends on how much capacity remains after X.
+
+    Core formula (single-file LRU, sequential access):
+        remaining = max(0, capacity - previous_file_size)
+        hit_rate  = min(1, remaining / current_file_size)
+
+    When the current task accesses the *same* file as the previous task the
+    hit rate is min(1, capacity / file_size) since the file's own pages are
+    still resident.
+    """
+
+    cache_capacity_bytes: float
+
+    def compute_hit_rates(
+        self,
+        task_sequence: List[Tuple[str, float]],
+        *,
+        cold_start: bool = True,
+    ) -> List[float]:
+        """Compute per-task hit rates for a sequential workflow.
 
         Args:
-            working_set_size: Size of the working set in bytes
+            task_sequence: Ordered list of (dataset_name, file_size_bytes)
+                           for each task in the workflow.
+            cold_start: If True the cache is empty before the first task
+                        (e.g. after drop_caches).
 
         Returns:
-            StackDistanceModel with uniform reuse pattern
+            List of hit rates, one per task, in [0, 1].
         """
+        if not task_sequence:
+            return []
 
-        def uniform_cdf(p: float, s: float) -> float:
-            return min(1.0, s / working_set_size)
+        hit_rates: List[float] = []
+        cached_dataset: Optional[str] = None
+        cached_size: float = 0.0
 
-        return cls(uniform_cdf, working_set_size)
+        for dataset_name, file_size in task_sequence:
+            if cold_start and not hit_rates:
+                hit_rates.append(0.0)
+            elif cached_dataset == dataset_name:
+                hr = min(1.0, self.cache_capacity_bytes / file_size) if file_size > 0 else 0.0
+                hit_rates.append(hr)
+            else:
+                remaining = max(0.0, self.cache_capacity_bytes - cached_size)
+                hr = min(1.0, remaining / file_size) if file_size > 0 else 0.0
+                hit_rates.append(hr)
 
-    @classmethod
-    def streaming_no_reuse(cls) -> StackDistanceModel:
-        """
-        Create a model for streaming access with no reuse.
+            cached_dataset = dataset_name
+            cached_size = file_size
 
-        Each byte is accessed exactly once, so reuse distance is infinite.
-        Cache hit rate is 0 regardless of cache size.
-        """
+        return hit_rates
 
-        def no_reuse_cdf(p: float, s: float) -> float:
-            return 0.0
-
-        return cls(no_reuse_cdf)
-
-    @classmethod
-    def full_reuse(cls) -> StackDistanceModel:
-        """
-        Create a model for workloads that fully reuse all data.
-
-        After initial cold miss, all accesses hit in cache (if capacity sufficient).
-        """
-
-        def full_reuse_cdf(p: float, s: float) -> float:
-            return 1.0  # Effectively infinite cache or very small working set
-
-        return cls(full_reuse_cdf)
-
-
-class PhaseBasedCacheModel(CacheBehaviorModel):
-    """
-    Piecewise cache model for multi-phase workloads.
-
-    Explicitly captures cold -> warm transitions via phases:
-    - Phase 1 (first pass / warmup): low hit rate
-    - Phase 2 (steady-state reuse): high hit rate
-    - Phase 3 (optional, thrash): hit drops when working set grows
-
-    This matches BottleMod's piecewise "events" philosophy.
-    """
-
-    @dataclass
-    class Phase:
-        """A phase with specific cache behavior."""
-
-        start_progress: float
-        end_progress: float
-        hit_rate: float  # Constant hit rate during this phase
-
-    def __init__(self, phases: List[Phase], cache_tier: int = 0):
-        """
-        Args:
-            phases: List of phases defining hit rate over progress
-            cache_tier: Index of the cache tier
-        """
-        self.phases = sorted(phases, key=lambda p: p.start_progress)
-        self.cache_tier = cache_tier
-
-    def compute_tier_mapping(
+    def compute_tier_mappings(
         self,
-        access_profile: LogicalAccessProfile,
-        tiers: List[StorageTier],
+        task_sequence: List[Tuple[str, float]],
+        cache_tier: int,
+        backing_tier: int,
         progress_range: Tuple[float, float],
-    ) -> TierMapping:
-        """Compute piecewise tier mapping from phases."""
-        # Build x points and coefficients from phases
-        x_points = []
-        h_values = []
+        *,
+        cold_start: bool = True,
+    ) -> List[TierMapping]:
+        """Compute per-task TierMappings for a sequential workflow.
 
-        for phase in self.phases:
-            x_points.append(phase.start_progress)
-            h_values.append(phase.hit_rate)
+        Convenience wrapper: calls ``compute_hit_rates`` and wraps
+        each result into a ``TierMapping.constant_hit_rate``.
 
-        # Add final point
-        x_points.append(self.phases[-1].end_progress)
+        Args:
+            task_sequence: Ordered list of (dataset_name, file_size_bytes).
+            cache_tier: Tier index for cache (e.g. 0 = page cache).
+            backing_tier: Tier index for backing store (e.g. 1 = disk).
+            progress_range: (start, end) progress values for the mappings.
+            cold_start: If True the cache is empty before the first task.
 
-        H_cache = PPoly(x_points, [h_values])
-        H_backing = PPoly(x_points, [[1.0 - value for value in h_values]])
-
-        # Find backing tier
-        backing_tier = max(t.tier_index for t in tiers)
-
-        return TierMapping(
-            dataset_name=access_profile.name,
-            H_read={self.cache_tier: H_cache, backing_tier: H_backing},
-            H_write={self.cache_tier: H_cache, backing_tier: H_backing},
-        )
+        Returns:
+            List of TierMapping objects, one per task.
+        """
+        hit_rates = self.compute_hit_rates(task_sequence, cold_start=cold_start)
+        return [
+            TierMapping.constant_hit_rate(
+                dataset_name=name,
+                cache_tier=cache_tier,
+                backing_tier=backing_tier,
+                hit_rate=hr,
+                progress_range=progress_range,
+            )
+            for (name, _), hr in zip(task_sequence, hit_rates)
+        ]
 
 
 # =============================================================================

@@ -1,3 +1,15 @@
+## 2026-03-20 12:46:29 +0100
+
+- Files changed:
+	- proposal/latex/proposal.tex
+	- logbook.md
+- Tests run:
+	- `pdflatex -interaction=nonstopmode proposal.tex` in `proposal/latex/` → PASS
+	- Result: PASS
+- Summary:
+	- Replaced the WRENCH/SimGrid TODO in the proposal with a related-work paragraph positioning SimGrid/WRENCH as broader workflow/distributed-system simulation frameworks.
+	- Framed BottleMod-CA as a complementary, lower-overhead analytic bottleneck model with explicit storage-tier and page-cache-aware reasoning.
+
 ## 2026-02-20 13:12:12 +0100
 
 - Files changed:
@@ -221,6 +233,29 @@
 	- Updated run recipes and documentation references to the new script name and current command format.
 	- Updated the companion memory-increase experiment to import from `exp1_reordering.py`.
 
+## 2026-03-05 14:19:00 +0100
+
+- Files changed:
+	- bottlemod/storage_hierarchy.py (removed `PhaseBasedCacheModel`, added `LRUEvictionModel`)
+	- bottlemod/__init__.py (replaced `PhaseBasedCacheModel` with `LRUEvictionModel` in imports and `__all__`)
+	- thesis_experiment/01_cach_aware_ordering/exp1_reordering.py (refactored `compute_hit_rates_interleaved` and `compute_hit_rates_grouped` to delegate to `LRUEvictionModel`)
+	- bottlemod/storage_hierarchy_README.md (replaced "phase-based" reference with LRU eviction model description)
+	- proposal/propsoal.md (replaced `PhaseBasedCacheModel` with `LRUEvictionModel` in thesis outline)
+	- logbook.md
+- Tests run:
+	- `py_compile` on `storage_hierarchy.py`, `__init__.py`, `exp1_reordering.py` → PASS (all 3 files)
+	- LRUEvictionModel hit-rate parity verification (interleaved + grouped, 1.9 GB files, 3 GB cache) → PASS (all assertions)
+	- StorageHierarchyTask + LRU integration test (cold/warm cache, tier mappings) → PASS
+	- `grep PhaseBasedCacheModel` across entire codebase → 0 matches (fully removed)
+	- Result: PASS
+- Summary:
+	- **Replaced `PhaseBasedCacheModel` with `LRUEvictionModel`** — formalized the ad-hoc eviction-based hit-rate computation (file sizes vs. available page cache memory) into a proper model class.
+	- `LRUEvictionModel` is a `@dataclass` with `cache_capacity_bytes` as the single field and two methods: `compute_hit_rates()` (returns per-task hit rates for a sequential workflow) and `compute_tier_mappings()` (wraps hit rates into `TierMapping.constant_hit_rate` calls).
+	- Not a `CacheBehaviorModel` subclass because it reasons about a sequence of tasks and their cross-eviction effects, whereas `CacheBehaviorModel.compute_tier_mapping()` operates on a single task/access_profile.
+	- Core formula: `remaining = max(0, capacity - previous_file_size)`, `hit_rate = min(1, remaining / current_file_size)`. Same-file follow-up: `hit_rate = min(1, capacity / file_size)`.
+	- Experiment functions `compute_hit_rates_interleaved()` and `compute_hit_rates_grouped()` now delegate to `LRUEvictionModel` instead of containing inline eviction logic.
+	- All references to `PhaseBasedCacheModel` removed from codebase (was in `storage_hierarchy.py`, `__init__.py`, `storage_hierarchy_README.md`, `propsoal.md`).
+
 ## 2026-03-04 14:19:00 +0100
 
 - Files changed:
@@ -231,3 +266,55 @@
 	- Result: PASS
 - Summary:
 	- **Thesis proposal design completed** — synthesized all prior work into a formal proposal:
+
+## 2026-03-19 19:22:25 +0100
+
+- Files changed:
+	- bottlemod/storage_hierarchy.py
+	- bottlemod/__init__.py
+	- bottlemod/storage_hierarchy_README.md
+	- proposal/propsoal.md
+	- logbook.md
+- Tests run:
+	- `lsp_diagnostics bottlemod/__init__.py`
+	- Result: PASS
+	- `lsp_diagnostics bottlemod/storage_hierarchy.py`
+	- Result: PRE-EXISTING DIAGNOSTICS (basedpyright warnings/errors already present in this file outside this change)
+	- `.venv/bin/python -c "import bottlemod; import bottlemod.storage_hierarchy; print('ok')"`
+	- Result: PASS
+- Summary:
+	- Removed `StackDistanceModel` from the core storage hierarchy module and package exports.
+	- Updated storage hierarchy docs/proposal text to stop referencing `StackDistanceModel` as an active model.
+	- Verified package imports still work after the removal.
+
+## 2026-03-20 10:25:49 +0100
+
+- Files changed:
+	- bottlemod/storage_hierarchy.py
+	- bottlemod/__init__.py
+	- logbook.md
+- Tests run:
+	- `lsp_diagnostics bottlemod/__init__.py`
+	- Result: PASS
+	- `lsp_diagnostics bottlemod/storage_hierarchy.py`
+	- Result: PRE-EXISTING DIAGNOSTICS (basedpyright warnings/errors already present in this file outside this change)
+	- `.venv/bin/python -c "from bottlemod.storage_hierarchy import LogicalAccessProfile, StorageTier, WSSModel; profile = LogicalAccessProfile.sequential_read('d', total_bytes=1e9, max_progress=1.0); tiers = [StorageTier.memory(capacity_GB=0.2), StorageTier.hdd()]; model = WSSModel.constant(1e9); mapping = model.compute_tier_mapping(profile, tiers, (0.0, 1.0)); mapping.validate((0.0, 1.0)); print({k: float(v(0.5)) for k, v in mapping.H_read.items()})"`
+	- Result: PASS (`{0: 0.2, 3: 0.8}`)
+- Summary:
+	- Added `WSSModel` as a new `CacheBehaviorModel` subclass using a progress-dependent working-set-size function.
+	- Implemented cumulative-hit estimation `min(1, capacity / wss)` with inclusive tier splitting and final-tier remainder assignment.
+	- Exported `WSSModel` from the package for use in cache-aware experiments and model construction.
+
+## 2026-03-20 10:52:20 +0100
+
+- Files changed:
+	- bottlemod/storage_hierarchy.py
+	- logbook.md
+- Tests run:
+	- `lsp_diagnostics bottlemod/storage_hierarchy.py --severity error`
+	- Result: PASS
+	- `.venv/bin/python -c "from bottlemod.storage_hierarchy import LogicalAccessProfile, StorageTier, WSSModel; profile = LogicalAccessProfile.sequential_read('d', total_bytes=1e9, max_progress=1.0); tiers = [StorageTier.memory(capacity_GB=0.2), StorageTier.hdd()]; model = WSSModel.constant(1e9); mapping = model.compute_tier_mapping(profile, tiers, (0.0, 1.0)); mapping.validate((0.0, 1.0)); print({k: float(v(0.5)) for k, v in mapping.H_read.items()})"`
+	- Result: PASS (`{0: 0.2, 3: 0.8}`)
+- Summary:
+	- Fixed the basedpyright invalid-cast errors in `TierMapping.validate()` by normalizing `PPoly` evaluation results through `numpy.asarray(...).item()` before converting to `float`.
+	- Confirmed `storage_hierarchy.py` is error-free in LSP diagnostics and that `WSSModel` validation still works end to end.

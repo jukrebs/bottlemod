@@ -32,8 +32,9 @@ The BottleMod-CA (Cache-Aware) extension enhances the original BottleMod framewo
   - For each dataset, maps what fraction of accesses are served by each tier as a function of progress.
 
 ### 4. Cache Behavior Models
-- **Purpose:** Abstract how cache/tier hit rates are computed (e.g., direct hit rate, stack distance, phase-based).
+- **Purpose:** Abstract how cache/tier hit rates are computed (e.g., direct hit rate, eviction-based models).
 - **Class:** `CacheBehaviorModel` and its subclasses
+- **Note:** For multi-task sequential workflows with LRU page-cache eviction, use `LRUEvictionModel` (standalone model, not a `CacheBehaviorModel` subclass) to compute per-task hit rates based on file sizes vs. available cache capacity.
 
 ### 5. Resource Derivation
 - **Purpose:** Convert the above abstractions into standard resource requirement and input functions for the BottleMod progress engine.
@@ -117,4 +118,3 @@ bottlemod_task = task.to_task()
 
 5. **Convenience and Validation:**
    - Added validation and utility methods for easier modeling and debugging (e.g., checking that tier mappings sum to 1).
-

@@ -15,8 +15,8 @@ from .storage_hierarchy import (
     # Cache behavior models
     CacheBehaviorModel,
     DirectHitRateModel,
-    StackDistanceModel,
-    PhaseBasedCacheModel,
+    WSSModel,
+    LRUEvictionModel,
     # Resource derivation
     derive_tier_resources,
     derive_all_tier_resources,
@@ -44,8 +44,8 @@ __all__ = [
     # BottleMod-CA: Cache behavior models
     "CacheBehaviorModel",
     "DirectHitRateModel",
-    "StackDistanceModel",
-    "PhaseBasedCacheModel",
+    "WSSModel",
+    "LRUEvictionModel",
     # BottleMod-CA: Resource derivation
     "derive_tier_resources",
     "derive_all_tier_resources",
